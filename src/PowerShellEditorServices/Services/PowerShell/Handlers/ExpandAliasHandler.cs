@@ -8,30 +8,30 @@ using MediatR;
 using OmniSharp.Extensions.JsonRpc;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
+namespace Microsoft.PowerShell.EditorServices.Handlers;
+
+[Serial, Method("powerShell/expandAlias")]
+internal interface IExpandAliasHandler : IJsonRpcRequestHandler<ExpandAliasParams, ExpandAliasResult> { }
+
+internal class ExpandAliasParams : IRequest<ExpandAliasResult>
 {
-    [Serial, Method("powerShell/expandAlias")]
-    internal interface IExpandAliasHandler : IJsonRpcRequestHandler<ExpandAliasParams, ExpandAliasResult> { }
+    public string Text { get; set; }
+}
 
-    internal class ExpandAliasParams : IRequest<ExpandAliasResult>
+internal class ExpandAliasResult
+{
+    public string Text { get; set; }
+}
+
+internal class ExpandAliasHandler : IExpandAliasHandler
+{
+    private readonly IInternalPowerShellExecutionService _executionService;
+
+    public ExpandAliasHandler(IInternalPowerShellExecutionService executionService) => _executionService = executionService;
+
+    public async Task<ExpandAliasResult> Handle(ExpandAliasParams request, CancellationToken cancellationToken)
     {
-        public string Text { get; set; }
-    }
-
-    internal class ExpandAliasResult
-    {
-        public string Text { get; set; }
-    }
-
-    internal class ExpandAliasHandler : IExpandAliasHandler
-    {
-        private readonly IInternalPowerShellExecutionService _executionService;
-
-        public ExpandAliasHandler(IInternalPowerShellExecutionService executionService) => _executionService = executionService;
-
-        public async Task<ExpandAliasResult> Handle(ExpandAliasParams request, CancellationToken cancellationToken)
-        {
-            const string script = @"
+        const string script = @"
 function __Expand-Alias {
     [System.Diagnostics.DebuggerHidden()]
     param($targetScript)
@@ -55,19 +55,18 @@ function __Expand-Alias {
     $targetScript
 }";
 
-            // TODO: Refactor to not rerun the function definition every time.
-            PSCommand psCommand = new();
-            psCommand
-                .AddScript(script)
-                .AddStatement()
-                .AddCommand("__Expand-Alias")
-                .AddArgument(request.Text);
-            System.Collections.Generic.IReadOnlyList<string> result = await _executionService.ExecutePSCommandAsync<string>(psCommand, cancellationToken).ConfigureAwait(false);
+        // TODO: Refactor to not rerun the function definition every time.
+        PSCommand psCommand = new();
+        psCommand
+            .AddScript(script)
+            .AddStatement()
+            .AddCommand("__Expand-Alias")
+            .AddArgument(request.Text);
+        System.Collections.Generic.IReadOnlyList<string> result = await _executionService.ExecutePSCommandAsync<string>(psCommand, cancellationToken).ConfigureAwait(false);
 
-            return new ExpandAliasResult
-            {
-                Text = result[0]
-            };
-        }
+        return new ExpandAliasResult
+        {
+            Text = result[0]
+        };
     }
 }

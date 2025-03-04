@@ -13,65 +13,64 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Client.Capabilities;
 using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
-{
-    internal class PsesReferencesHandler : ReferencesHandlerBase
-    {
-        private static readonly LocationContainer s_emptyLocationContainer = new();
-        private readonly SymbolsService _symbolsService;
-        private readonly WorkspaceService _workspaceService;
+namespace Microsoft.PowerShell.EditorServices.Handlers;
 
-        public PsesReferencesHandler(SymbolsService symbolsService, WorkspaceService workspaceService)
+internal class PsesReferencesHandler : ReferencesHandlerBase
+{
+    private static readonly LocationContainer s_emptyLocationContainer = new();
+    private readonly SymbolsService _symbolsService;
+    private readonly WorkspaceService _workspaceService;
+
+    public PsesReferencesHandler(SymbolsService symbolsService, WorkspaceService workspaceService)
+    {
+        _symbolsService = symbolsService;
+        _workspaceService = workspaceService;
+    }
+
+    protected override ReferenceRegistrationOptions CreateRegistrationOptions(ReferenceCapability capability, ClientCapabilities clientCapabilities) => new()
+    {
+        DocumentSelector = LspUtils.PowerShellDocumentSelector
+    };
+
+    public override async Task<LocationContainer> Handle(ReferenceParams request, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
         {
-            _symbolsService = symbolsService;
-            _workspaceService = workspaceService;
+            return s_emptyLocationContainer;
         }
 
-        protected override ReferenceRegistrationOptions CreateRegistrationOptions(ReferenceCapability capability, ClientCapabilities clientCapabilities) => new()
-        {
-            DocumentSelector = LspUtils.PowerShellDocumentSelector
-        };
+        ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
 
-        public override async Task<LocationContainer> Handle(ReferenceParams request, CancellationToken cancellationToken)
+        SymbolReference foundSymbol =
+            SymbolsService.FindSymbolAtLocation(
+                scriptFile,
+                request.Position.Line + 1,
+                request.Position.Character + 1);
+
+        List<Location> locations = new();
+        foreach (SymbolReference foundReference in await _symbolsService.ScanForReferencesOfSymbolAsync(
+                foundSymbol, cancellationToken).ConfigureAwait(false))
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                return s_emptyLocationContainer;
+                break;
             }
 
-            ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
-
-            SymbolReference foundSymbol =
-                SymbolsService.FindSymbolAtLocation(
-                    scriptFile,
-                    request.Position.Line + 1,
-                    request.Position.Character + 1);
-
-            List<Location> locations = new();
-            foreach (SymbolReference foundReference in await _symbolsService.ScanForReferencesOfSymbolAsync(
-                    foundSymbol, cancellationToken).ConfigureAwait(false))
+            // Respect the request's setting to include declarations.
+            if (!request.Context.IncludeDeclaration && foundReference.IsDeclaration)
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-
-                // Respect the request's setting to include declarations.
-                if (!request.Context.IncludeDeclaration && foundReference.IsDeclaration)
-                {
-                    continue;
-                }
-
-                locations.Add(new Location
-                {
-                    Uri = DocumentUri.From(foundReference.FilePath),
-                    Range = foundReference.NameRegion.ToRange()
-                });
+                continue;
             }
 
-            return locations.Count == 0
-                ? s_emptyLocationContainer
-                : locations;
+            locations.Add(new Location
+            {
+                Uri = DocumentUri.From(foundReference.FilePath),
+                Range = foundReference.NameRegion.ToRange()
+            });
         }
+
+        return locations.Count == 0
+            ? s_emptyLocationContainer
+            : locations;
     }
 }

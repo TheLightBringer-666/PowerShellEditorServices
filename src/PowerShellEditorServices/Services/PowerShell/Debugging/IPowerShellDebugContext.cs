@@ -5,34 +5,33 @@ using System;
 using System.Management.Automation;
 using System.Threading.Tasks;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Debugging
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Debugging;
+
+internal interface IPowerShellDebugContext
 {
-    internal interface IPowerShellDebugContext
-    {
-        bool IsStopped { get; }
+    bool IsStopped { get; }
 
-        DebuggerStopEventArgs LastStopEventArgs { get; }
+    DebuggerStopEventArgs LastStopEventArgs { get; }
 
-        public bool IsDebuggingRemoteRunspace { get; set; }
+    public bool IsDebuggingRemoteRunspace { get; set; }
 
-        public event Action<object, DebuggerStopEventArgs> DebuggerStopped;
+    public event Action<object, DebuggerStopEventArgs> DebuggerStopped;
 
-        public event Action<object, DebuggerResumingEventArgs> DebuggerResuming;
+    public event Action<object, DebuggerResumingEventArgs> DebuggerResuming;
 
-        public event Action<object, BreakpointUpdatedEventArgs> BreakpointUpdated;
+    public event Action<object, BreakpointUpdatedEventArgs> BreakpointUpdated;
 
-        void Continue();
+    void Continue();
 
-        void StepOver();
+    void StepOver();
 
-        void StepInto();
+    void StepInto();
 
-        void StepOut();
+    void StepOut();
 
-        void BreakExecution();
+    void BreakExecution();
 
-        void Abort();
+    void Abort();
 
-        Task<DscBreakpointCapability> GetDscBreakpointCapabilityAsync();
-    }
+    Task<DscBreakpointCapability> GetDscBreakpointCapabilityAsync();
 }

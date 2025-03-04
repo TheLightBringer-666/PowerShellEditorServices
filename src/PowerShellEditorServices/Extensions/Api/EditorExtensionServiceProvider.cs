@@ -11,193 +11,192 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Server;
 
 using InternalServices = Microsoft.PowerShell.EditorServices.Services;
 
-namespace Microsoft.PowerShell.EditorServices.Extensions.Services
+namespace Microsoft.PowerShell.EditorServices.Extensions.Services;
+
+/// <summary>
+/// Object to provide extension service APIs to extensions to PSES.
+/// </summary>
+public class EditorExtensionServiceProvider
 {
-    /// <summary>
-    /// Object to provide extension service APIs to extensions to PSES.
-    /// </summary>
-    public class EditorExtensionServiceProvider
+    private static readonly Assembly s_psesAsm = typeof(EditorExtensionServiceProvider).Assembly;
+
+    private static readonly Lazy<object> s_psesAsmLoadContextLazy = new(GetPsesAsmLoadContext);
+
+    private static readonly Lazy<Type> s_asmLoadContextType = new(() => Type.GetType("System.Runtime.Loader.AssemblyLoadContext"));
+
+    private static readonly Lazy<Func<IDisposable>> s_enterPsesReflectionContextLazy = new(GetPsesAlcReflectionContextEntryFunc);
+
+    private static readonly Lazy<Func<string, Assembly>> s_loadAssemblyInPsesAlc = new(GetPsesAlcLoadAsmFunc);
+
+    private static Type AsmLoadContextType => s_asmLoadContextType.Value;
+
+    private static object PsesAssemblyLoadContext => s_psesAsmLoadContextLazy.Value;
+
+    private static Func<IDisposable> EnterPsesAlcReflectionContext => s_enterPsesReflectionContextLazy.Value;
+
+    private static Func<string, Assembly> LoadAssemblyInPsesAlc => s_loadAssemblyInPsesAlc.Value;
+
+    private readonly IServiceProvider _serviceProvider;
+
+    internal EditorExtensionServiceProvider(IServiceProvider serviceProvider)
     {
-        private static readonly Assembly s_psesAsm = typeof(EditorExtensionServiceProvider).Assembly;
+        _serviceProvider = serviceProvider;
+        LanguageServer = new LanguageServerService(_serviceProvider.GetService<ILanguageServerFacade>());
+        ExtensionCommands = new ExtensionCommandService(_serviceProvider.GetService<ExtensionService>());
+        Workspace = new WorkspaceService(_serviceProvider.GetService<InternalServices.WorkspaceService>());
+        EditorContext = new EditorContextService(_serviceProvider.GetService<ILanguageServerFacade>());
+        EditorUI = new EditorUIService(_serviceProvider.GetService<ILanguageServerFacade>());
+    }
 
-        private static readonly Lazy<object> s_psesAsmLoadContextLazy = new(GetPsesAsmLoadContext);
+    /// <summary>
+    /// A service wrapper around the language server allowing sending notifications and requests to the LSP client.
+    /// </summary>
+    public ILanguageServerService LanguageServer { get; }
 
-        private static readonly Lazy<Type> s_asmLoadContextType = new(() => Type.GetType("System.Runtime.Loader.AssemblyLoadContext"));
+    /// <summary>
+    /// Service providing extension command registration and functionality.
+    /// </summary>
+    public IExtensionCommandService ExtensionCommands { get; }
 
-        private static readonly Lazy<Func<IDisposable>> s_enterPsesReflectionContextLazy = new(GetPsesAlcReflectionContextEntryFunc);
+    /// <summary>
+    /// Service providing editor workspace functionality.
+    /// </summary>
+    public IWorkspaceService Workspace { get; }
 
-        private static readonly Lazy<Func<string, Assembly>> s_loadAssemblyInPsesAlc = new(GetPsesAlcLoadAsmFunc);
+    /// <summary>
+    /// Service providing current editor context functionality.
+    /// </summary>
+    public IEditorContextService EditorContext { get; }
 
-        private static Type AsmLoadContextType => s_asmLoadContextType.Value;
+    /// <summary>
+    /// Service providing editor UI functionality.
+    /// </summary>
+    public IEditorUIService EditorUI { get; }
 
-        private static object PsesAssemblyLoadContext => s_psesAsmLoadContextLazy.Value;
+    /// <summary>
+    /// Get an underlying service object from PSES by type name.
+    /// </summary>
+    /// <param name="psesServiceFullTypeName">The full type name of the service to get.</param>
+    /// <returns>The service object requested, or null if no service of that type name exists.</returns>
+    /// <remarks>
+    /// This method is intended as a trapdoor and should not be used in the first instance.
+    /// Consider using the public extension services if possible.
+    /// </remarks>
+    public object GetService(string psesServiceFullTypeName) => GetService(psesServiceFullTypeName, "Microsoft.PowerShell.EditorServices");
 
-        private static Func<IDisposable> EnterPsesAlcReflectionContext => s_enterPsesReflectionContextLazy.Value;
+    /// <summary>
+    /// Get an underlying service object from PSES by type name.
+    /// </summary>
+    /// <param name="fullTypeName">The full type name of the service to get.</param>
+    /// <param name="assemblyName">The assembly name from which the service comes.</param>
+    /// <returns>The service object requested, or null if no service of that type name exists.</returns>
+    /// <remarks>
+    /// This method is intended as a trapdoor and should not be used in the first instance.
+    /// Consider using the public extension services if possible.
+    /// </remarks>
+    public object GetService(string fullTypeName, string assemblyName)
+    {
+        string asmQualifiedName = $"{fullTypeName}, {assemblyName}";
+        return GetServiceByAssemblyQualifiedName(asmQualifiedName);
+    }
 
-        private static Func<string, Assembly> LoadAssemblyInPsesAlc => s_loadAssemblyInPsesAlc.Value;
-
-        private readonly IServiceProvider _serviceProvider;
-
-        internal EditorExtensionServiceProvider(IServiceProvider serviceProvider)
+    /// <summary>
+    /// Get a PSES service by its fully assembly qualified name.
+    /// </summary>
+    /// <param name="asmQualifiedTypeName">The fully assembly qualified name of the service type to load.</param>
+    /// <returns>The service corresponding to the given type, or null if none was found.</returns>
+    /// <remarks>
+    /// It's not recommended to run this method in parallel with anything,
+    /// since the global reflection context change may have side effects in other threads.
+    /// </remarks>
+    public object GetServiceByAssemblyQualifiedName(string asmQualifiedTypeName)
+    {
+        Type serviceType;
+        if (VersionUtils.IsNetCore)
         {
-            _serviceProvider = serviceProvider;
-            LanguageServer = new LanguageServerService(_serviceProvider.GetService<ILanguageServerFacade>());
-            ExtensionCommands = new ExtensionCommandService(_serviceProvider.GetService<ExtensionService>());
-            Workspace = new WorkspaceService(_serviceProvider.GetService<InternalServices.WorkspaceService>());
-            EditorContext = new EditorContextService(_serviceProvider.GetService<ILanguageServerFacade>());
-            EditorUI = new EditorUIService(_serviceProvider.GetService<ILanguageServerFacade>());
-        }
-
-        /// <summary>
-        /// A service wrapper around the language server allowing sending notifications and requests to the LSP client.
-        /// </summary>
-        public ILanguageServerService LanguageServer { get; }
-
-        /// <summary>
-        /// Service providing extension command registration and functionality.
-        /// </summary>
-        public IExtensionCommandService ExtensionCommands { get; }
-
-        /// <summary>
-        /// Service providing editor workspace functionality.
-        /// </summary>
-        public IWorkspaceService Workspace { get; }
-
-        /// <summary>
-        /// Service providing current editor context functionality.
-        /// </summary>
-        public IEditorContextService EditorContext { get; }
-
-        /// <summary>
-        /// Service providing editor UI functionality.
-        /// </summary>
-        public IEditorUIService EditorUI { get; }
-
-        /// <summary>
-        /// Get an underlying service object from PSES by type name.
-        /// </summary>
-        /// <param name="psesServiceFullTypeName">The full type name of the service to get.</param>
-        /// <returns>The service object requested, or null if no service of that type name exists.</returns>
-        /// <remarks>
-        /// This method is intended as a trapdoor and should not be used in the first instance.
-        /// Consider using the public extension services if possible.
-        /// </remarks>
-        public object GetService(string psesServiceFullTypeName) => GetService(psesServiceFullTypeName, "Microsoft.PowerShell.EditorServices");
-
-        /// <summary>
-        /// Get an underlying service object from PSES by type name.
-        /// </summary>
-        /// <param name="fullTypeName">The full type name of the service to get.</param>
-        /// <param name="assemblyName">The assembly name from which the service comes.</param>
-        /// <returns>The service object requested, or null if no service of that type name exists.</returns>
-        /// <remarks>
-        /// This method is intended as a trapdoor and should not be used in the first instance.
-        /// Consider using the public extension services if possible.
-        /// </remarks>
-        public object GetService(string fullTypeName, string assemblyName)
-        {
-            string asmQualifiedName = $"{fullTypeName}, {assemblyName}";
-            return GetServiceByAssemblyQualifiedName(asmQualifiedName);
-        }
-
-        /// <summary>
-        /// Get a PSES service by its fully assembly qualified name.
-        /// </summary>
-        /// <param name="asmQualifiedTypeName">The fully assembly qualified name of the service type to load.</param>
-        /// <returns>The service corresponding to the given type, or null if none was found.</returns>
-        /// <remarks>
-        /// It's not recommended to run this method in parallel with anything,
-        /// since the global reflection context change may have side effects in other threads.
-        /// </remarks>
-        public object GetServiceByAssemblyQualifiedName(string asmQualifiedTypeName)
-        {
-            Type serviceType;
-            if (VersionUtils.IsNetCore)
+            using (EnterPsesAlcReflectionContext())
             {
-                using (EnterPsesAlcReflectionContext())
-                {
-                    serviceType = s_psesAsm.GetType(asmQualifiedTypeName);
-                }
+                serviceType = s_psesAsm.GetType(asmQualifiedTypeName);
             }
-            else
-            {
-                serviceType = Type.GetType(asmQualifiedTypeName);
-            }
-
-            return GetService(serviceType);
         }
-
-        /// <summary>
-        /// Get an underlying service object from PSES by type name.
-        /// </summary>
-        /// <param name="serviceType">The type of the service to fetch.</param>
-        /// <returns>The service object requested, or null if no service of that type name exists.</returns>
-        /// <remarks>
-        /// This method is intended as a trapdoor and should not be used in the first instance.
-        /// Consider using the public extension services if possible.
-        /// Also note that services in PSES may live in a separate assembly load context,
-        /// meaning that a type of the seemingly correct name may fail to fetch to a service
-        /// that is known under a type of the same name but loaded in a different context.
-        /// </remarks>
-        public object GetService(Type serviceType) => _serviceProvider.GetService(serviceType);
-
-        /// <summary>
-        /// Get the assembly load context the PSES loads its dependencies into.
-        /// In .NET Framework, this returns null.
-        /// </summary>
-        /// <returns>The assembly load context used for loading PSES, or null in .NET Framework.</returns>
-        public static object GetPsesAssemblyLoadContext()
+        else
         {
-            if (!VersionUtils.IsNetCore)
-            {
-                return null;
-            }
-
-            return PsesAssemblyLoadContext;
+            serviceType = Type.GetType(asmQualifiedTypeName);
         }
 
-        /// <summary>
-        /// Load the given assembly in the PSES assembly load context.
-        /// In .NET Framework, this simple loads the assembly in the LoadFrom context.
-        /// </summary>
-        /// <param name="assemblyPath">The absolute path of the assembly to load.</param>
-        /// <returns>The loaded assembly object.</returns>
-        public static Assembly LoadAssemblyInPsesLoadContext(string assemblyPath)
+        return GetService(serviceType);
+    }
+
+    /// <summary>
+    /// Get an underlying service object from PSES by type name.
+    /// </summary>
+    /// <param name="serviceType">The type of the service to fetch.</param>
+    /// <returns>The service object requested, or null if no service of that type name exists.</returns>
+    /// <remarks>
+    /// This method is intended as a trapdoor and should not be used in the first instance.
+    /// Consider using the public extension services if possible.
+    /// Also note that services in PSES may live in a separate assembly load context,
+    /// meaning that a type of the seemingly correct name may fail to fetch to a service
+    /// that is known under a type of the same name but loaded in a different context.
+    /// </remarks>
+    public object GetService(Type serviceType) => _serviceProvider.GetService(serviceType);
+
+    /// <summary>
+    /// Get the assembly load context the PSES loads its dependencies into.
+    /// In .NET Framework, this returns null.
+    /// </summary>
+    /// <returns>The assembly load context used for loading PSES, or null in .NET Framework.</returns>
+    public static object GetPsesAssemblyLoadContext()
+    {
+        if (!VersionUtils.IsNetCore)
         {
-            if (!VersionUtils.IsNetCore)
-            {
-                return Assembly.LoadFrom(assemblyPath);
-            }
-
-            return LoadAssemblyInPsesAlc(assemblyPath);
+            return null;
         }
 
-        private static Func<IDisposable> GetPsesAlcReflectionContextEntryFunc()
+        return PsesAssemblyLoadContext;
+    }
+
+    /// <summary>
+    /// Load the given assembly in the PSES assembly load context.
+    /// In .NET Framework, this simple loads the assembly in the LoadFrom context.
+    /// </summary>
+    /// <param name="assemblyPath">The absolute path of the assembly to load.</param>
+    /// <returns>The loaded assembly object.</returns>
+    public static Assembly LoadAssemblyInPsesLoadContext(string assemblyPath)
+    {
+        if (!VersionUtils.IsNetCore)
         {
-            MethodInfo enterReflectionContextMethod = AsmLoadContextType.GetMethod("EnterContextualReflection", BindingFlags.Public | BindingFlags.Instance);
-
-            return Expression.Lambda<Func<IDisposable>>(
-                Expression.Convert(
-                    Expression.Call(Expression.Constant(PsesAssemblyLoadContext), enterReflectionContextMethod),
-                    typeof(IDisposable))).Compile();
+            return Assembly.LoadFrom(assemblyPath);
         }
 
-        private static Func<string, Assembly> GetPsesAlcLoadAsmFunc()
+        return LoadAssemblyInPsesAlc(assemblyPath);
+    }
+
+    private static Func<IDisposable> GetPsesAlcReflectionContextEntryFunc()
+    {
+        MethodInfo enterReflectionContextMethod = AsmLoadContextType.GetMethod("EnterContextualReflection", BindingFlags.Public | BindingFlags.Instance);
+
+        return Expression.Lambda<Func<IDisposable>>(
+            Expression.Convert(
+                Expression.Call(Expression.Constant(PsesAssemblyLoadContext), enterReflectionContextMethod),
+                typeof(IDisposable))).Compile();
+    }
+
+    private static Func<string, Assembly> GetPsesAlcLoadAsmFunc()
+    {
+        MethodInfo loadFromAssemblyPathMethod = AsmLoadContextType.GetMethod("LoadFromAssemblyPath", BindingFlags.Public | BindingFlags.Instance);
+        return (Func<string, Assembly>)loadFromAssemblyPathMethod.CreateDelegate(typeof(Func<string, Assembly>), PsesAssemblyLoadContext);
+    }
+
+    private static object GetPsesAsmLoadContext()
+    {
+        if (!VersionUtils.IsNetCore)
         {
-            MethodInfo loadFromAssemblyPathMethod = AsmLoadContextType.GetMethod("LoadFromAssemblyPath", BindingFlags.Public | BindingFlags.Instance);
-            return (Func<string, Assembly>)loadFromAssemblyPathMethod.CreateDelegate(typeof(Func<string, Assembly>), PsesAssemblyLoadContext);
+            return null;
         }
 
-        private static object GetPsesAsmLoadContext()
-        {
-            if (!VersionUtils.IsNetCore)
-            {
-                return null;
-            }
-
-            Type alcType = Type.GetType("System.Runtime.Loader.AssemblyLoadContext");
-            MethodInfo getAlcMethod = alcType.GetMethod("GetLoadContext", BindingFlags.Public | BindingFlags.Static);
-            return getAlcMethod.Invoke(obj: null, new object[] { s_psesAsm });
-        }
+        Type alcType = Type.GetType("System.Runtime.Loader.AssemblyLoadContext");
+        MethodInfo getAlcMethod = alcType.GetMethod("GetLoadContext", BindingFlags.Public | BindingFlags.Static);
+        return getAlcMethod.Invoke(obj: null, new object[] { s_psesAsm });
     }
 }

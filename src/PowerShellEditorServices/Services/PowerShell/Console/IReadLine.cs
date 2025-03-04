@@ -3,13 +3,12 @@
 
 using System.Threading;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Console
-{
-    // TODO: Do we really need a whole interface for this?
-    internal interface IReadLine
-    {
-        string ReadLine(CancellationToken cancellationToken);
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Console;
 
-        void AddToHistory(string historyEntry);
-    }
+// TODO: Do we really need a whole interface for this?
+internal interface IReadLine
+{
+    string ReadLine(CancellationToken cancellationToken);
+
+    void AddToHistory(string historyEntry);
 }

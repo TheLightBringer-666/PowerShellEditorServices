@@ -1,97 +1,96 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-namespace Microsoft.PowerShell.EditorServices.Extensions
+namespace Microsoft.PowerShell.EditorServices.Extensions;
+
+/// <summary>
+/// Provides a PowerShell-facing API which allows scripts to
+/// interact with the editor's workspace.
+/// </summary>
+public sealed class EditorWorkspace
 {
+    #region Private Fields
+
+    private readonly IEditorOperations editorOperations;
+
+    #endregion
+
+    #region Properties
+
     /// <summary>
-    /// Provides a PowerShell-facing API which allows scripts to
-    /// interact with the editor's workspace.
+    /// Gets the server's initial working directory, since the extension API doesn't have a
+    /// multi-root workspace concept.
     /// </summary>
-    public sealed class EditorWorkspace
-    {
-        #region Private Fields
+    public string Path => editorOperations.GetWorkspacePath();
 
-        private readonly IEditorOperations editorOperations;
+    /// <summary>
+    /// Get all the workspace folders' paths.
+    /// </summary>
+    public string[] Paths => editorOperations.GetWorkspacePaths();
 
-        #endregion
+    #endregion
 
-        #region Properties
+    #region Constructors
 
-        /// <summary>
-        /// Gets the server's initial working directory, since the extension API doesn't have a
-        /// multi-root workspace concept.
-        /// </summary>
-        public string Path => editorOperations.GetWorkspacePath();
+    internal EditorWorkspace(IEditorOperations editorOperations) => this.editorOperations = editorOperations;
 
-        /// <summary>
-        /// Get all the workspace folders' paths.
-        /// </summary>
-        public string[] Paths => editorOperations.GetWorkspacePaths();
+    #endregion
 
-        #endregion
+    #region Public Methods
+    // TODO: Consider returning bool instead of void to indicate success?
 
-        #region Constructors
+    /// <summary>
+    /// Creates a new file in the editor.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void NewFile() => editorOperations.NewFileAsync(string.Empty).Wait();
 
-        internal EditorWorkspace(IEditorOperations editorOperations) => this.editorOperations = editorOperations;
+    /// <summary>
+    /// Creates a new file in the editor.
+    /// </summary>
+    /// <param name="content">The content to place in the new file.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void NewFile(string content) => editorOperations.NewFileAsync(content).Wait();
 
-        #endregion
+    /// <summary>
+    /// Opens a file in the workspace. If the file is already open
+    /// its buffer will be made active.
+    /// </summary>
+    /// <param name="filePath">The path to the file to be opened.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void OpenFile(string filePath) => editorOperations.OpenFileAsync(filePath).Wait();
 
-        #region Public Methods
-        // TODO: Consider returning bool instead of void to indicate success?
+    /// <summary>
+    /// Opens a file in the workspace. If the file is already open
+    /// its buffer will be made active.
+    /// You can specify whether the file opens as a preview or as a durable editor.
+    /// </summary>
+    /// <param name="filePath">The path to the file to be opened.</param>
+    /// <param name="preview">Determines wether the file is opened as a preview or as a durable editor.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void OpenFile(string filePath, bool preview) => editorOperations.OpenFileAsync(filePath, preview).Wait();
 
-        /// <summary>
-        /// Creates a new file in the editor.
-        /// </summary>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void NewFile() => editorOperations.NewFileAsync(string.Empty).Wait();
+    /// <summary>
+    /// Closes a file in the workspace.
+    /// </summary>
+    /// <param name="filePath">The path to the file to be closed.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void CloseFile(string filePath) => editorOperations.CloseFileAsync(filePath).Wait();
 
-        /// <summary>
-        /// Creates a new file in the editor.
-        /// </summary>
-        /// <param name="content">The content to place in the new file.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void NewFile(string content) => editorOperations.NewFileAsync(content).Wait();
+    /// <summary>
+    /// Saves an open file in the workspace.
+    /// </summary>
+    /// <param name="filePath">The path to the file to be saved.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void SaveFile(string filePath) => editorOperations.SaveFileAsync(filePath).Wait();
 
-        /// <summary>
-        /// Opens a file in the workspace. If the file is already open
-        /// its buffer will be made active.
-        /// </summary>
-        /// <param name="filePath">The path to the file to be opened.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void OpenFile(string filePath) => editorOperations.OpenFileAsync(filePath).Wait();
+    /// <summary>
+    /// Saves a file with a new name AKA a copy.
+    /// </summary>
+    /// <param name="oldFilePath">The file to copy.</param>
+    /// <param name="newFilePath">The file to create.</param>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
+    public void SaveFile(string oldFilePath, string newFilePath) => editorOperations.SaveFileAsync(oldFilePath, newFilePath).Wait();
 
-        /// <summary>
-        /// Opens a file in the workspace. If the file is already open
-        /// its buffer will be made active.
-        /// You can specify whether the file opens as a preview or as a durable editor.
-        /// </summary>
-        /// <param name="filePath">The path to the file to be opened.</param>
-        /// <param name="preview">Determines wether the file is opened as a preview or as a durable editor.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void OpenFile(string filePath, bool preview) => editorOperations.OpenFileAsync(filePath, preview).Wait();
-
-        /// <summary>
-        /// Closes a file in the workspace.
-        /// </summary>
-        /// <param name="filePath">The path to the file to be closed.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void CloseFile(string filePath) => editorOperations.CloseFileAsync(filePath).Wait();
-
-        /// <summary>
-        /// Saves an open file in the workspace.
-        /// </summary>
-        /// <param name="filePath">The path to the file to be saved.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void SaveFile(string filePath) => editorOperations.SaveFileAsync(filePath).Wait();
-
-        /// <summary>
-        /// Saves a file with a new name AKA a copy.
-        /// </summary>
-        /// <param name="oldFilePath">The file to copy.</param>
-        /// <param name="newFilePath">The file to create.</param>
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "Supporting synchronous API.")]
-        public void SaveFile(string oldFilePath, string newFilePath) => editorOperations.SaveFileAsync(oldFilePath, newFilePath).Wait();
-
-        #endregion
-    }
+    #endregion
 }

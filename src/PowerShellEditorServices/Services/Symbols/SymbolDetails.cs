@@ -9,69 +9,68 @@ using Microsoft.PowerShell.EditorServices.Services.PowerShell;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell.Runspace;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell.Utility;
 
-namespace Microsoft.PowerShell.EditorServices.Services.Symbols
+namespace Microsoft.PowerShell.EditorServices.Services.Symbols;
+
+/// <summary>
+/// Provides detailed information for a given symbol.
+/// TODO: Get rid of this and just use return documentation.
+/// </summary>
+[DebuggerDisplay("SymbolReference = {SymbolReference.SymbolType}/{SymbolReference.SymbolName}, DisplayString = {DisplayString}")]
+internal class SymbolDetails
 {
+    #region Properties
+
     /// <summary>
-    /// Provides detailed information for a given symbol.
-    /// TODO: Get rid of this and just use return documentation.
+    /// Gets the original symbol reference which was used to gather details.
     /// </summary>
-    [DebuggerDisplay("SymbolReference = {SymbolReference.SymbolType}/{SymbolReference.SymbolName}, DisplayString = {DisplayString}")]
-    internal class SymbolDetails
+    public SymbolReference SymbolReference { get; private set; }
+
+    /// <summary>
+    /// Gets the documentation string for this symbol.  Returns an
+    /// empty string if the symbol has no documentation.
+    /// </summary>
+    public string Documentation { get; private set; }
+
+    #endregion
+
+    #region Constructors
+
+    internal static async Task<SymbolDetails> CreateAsync(
+        SymbolReference symbolReference,
+        IRunspaceInfo currentRunspace,
+        IInternalPowerShellExecutionService executionService,
+        CancellationToken cancellationToken)
     {
-        #region Properties
-
-        /// <summary>
-        /// Gets the original symbol reference which was used to gather details.
-        /// </summary>
-        public SymbolReference SymbolReference { get; private set; }
-
-        /// <summary>
-        /// Gets the documentation string for this symbol.  Returns an
-        /// empty string if the symbol has no documentation.
-        /// </summary>
-        public string Documentation { get; private set; }
-
-        #endregion
-
-        #region Constructors
-
-        internal static async Task<SymbolDetails> CreateAsync(
-            SymbolReference symbolReference,
-            IRunspaceInfo currentRunspace,
-            IInternalPowerShellExecutionService executionService,
-            CancellationToken cancellationToken)
+        SymbolDetails symbolDetails = new()
         {
-            SymbolDetails symbolDetails = new()
-            {
-                SymbolReference = symbolReference
-            };
+            SymbolReference = symbolReference
+        };
 
-            if (symbolReference.Type is SymbolType.Function)
-            {
-                CommandInfo commandInfo = await CommandHelpers.GetCommandInfoAsync(
-                    symbolReference.Id,
-                    currentRunspace,
-                    executionService,
-                    cancellationToken).ConfigureAwait(false);
+        if (symbolReference.Type is SymbolType.Function)
+        {
+            CommandInfo commandInfo = await CommandHelpers.GetCommandInfoAsync(
+                symbolReference.Id,
+                currentRunspace,
+                executionService,
+                cancellationToken).ConfigureAwait(false);
 
-                if (commandInfo is not null)
+            if (commandInfo is not null)
+            {
+                symbolDetails.Documentation =
+                    await CommandHelpers.GetCommandSynopsisAsync(
+                        commandInfo,
+                        executionService,
+                        cancellationToken).ConfigureAwait(false);
+
+                if (commandInfo.CommandType == CommandTypes.Application)
                 {
-                    symbolDetails.Documentation =
-                        await CommandHelpers.GetCommandSynopsisAsync(
-                            commandInfo,
-                            executionService,
-                            cancellationToken).ConfigureAwait(false);
-
-                    if (commandInfo.CommandType == CommandTypes.Application)
-                    {
-                        symbolDetails.SymbolReference = symbolReference with { Name = $"(application) ${symbolReference.Name}" };
-                    }
+                    symbolDetails.SymbolReference = symbolReference with { Name = $"(application) ${symbolReference.Name}" };
                 }
             }
-
-            return symbolDetails;
         }
 
-        #endregion
+        return symbolDetails;
     }
+
+    #endregion
 }

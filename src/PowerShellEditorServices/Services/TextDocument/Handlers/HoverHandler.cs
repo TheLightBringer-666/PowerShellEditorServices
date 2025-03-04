@@ -13,66 +13,65 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Client.Capabilities;
 using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
-{
-    internal class PsesHoverHandler : HoverHandlerBase
-    {
-        private readonly ILogger _logger;
-        private readonly SymbolsService _symbolsService;
-        private readonly WorkspaceService _workspaceService;
+namespace Microsoft.PowerShell.EditorServices.Handlers;
 
-        public PsesHoverHandler(
-            ILoggerFactory factory,
-            SymbolsService symbolsService,
-            WorkspaceService workspaceService)
+internal class PsesHoverHandler : HoverHandlerBase
+{
+    private readonly ILogger _logger;
+    private readonly SymbolsService _symbolsService;
+    private readonly WorkspaceService _workspaceService;
+
+    public PsesHoverHandler(
+        ILoggerFactory factory,
+        SymbolsService symbolsService,
+        WorkspaceService workspaceService)
+    {
+        _logger = factory.CreateLogger<PsesHoverHandler>();
+        _symbolsService = symbolsService;
+        _workspaceService = workspaceService;
+    }
+
+    protected override HoverRegistrationOptions CreateRegistrationOptions(HoverCapability capability, ClientCapabilities clientCapabilities) => new()
+    {
+        DocumentSelector = LspUtils.PowerShellDocumentSelector
+    };
+
+    public override async Task<Hover> Handle(HoverParams request, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
         {
-            _logger = factory.CreateLogger<PsesHoverHandler>();
-            _symbolsService = symbolsService;
-            _workspaceService = workspaceService;
+            _logger.LogDebug("Hover request canceled for file: {Uri}", request.TextDocument.Uri);
+            return null;
         }
 
-        protected override HoverRegistrationOptions CreateRegistrationOptions(HoverCapability capability, ClientCapabilities clientCapabilities) => new()
+        ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
+
+        SymbolDetails symbolDetails =
+            await _symbolsService.FindSymbolDetailsAtLocationAsync(
+                    scriptFile,
+                    request.Position.Line + 1,
+                    request.Position.Character + 1,
+                    cancellationToken).ConfigureAwait(false);
+
+        if (symbolDetails is null)
         {
-            DocumentSelector = LspUtils.PowerShellDocumentSelector
+            return null;
+        }
+
+        List<MarkedString> symbolInfo = new()
+        {
+            new MarkedString("PowerShell", symbolDetails.SymbolReference.Name)
         };
 
-        public override async Task<Hover> Handle(HoverParams request, CancellationToken cancellationToken)
+        if (!string.IsNullOrEmpty(symbolDetails.Documentation))
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("Hover request canceled for file: {Uri}", request.TextDocument.Uri);
-                return null;
-            }
-
-            ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
-
-            SymbolDetails symbolDetails =
-                await _symbolsService.FindSymbolDetailsAtLocationAsync(
-                        scriptFile,
-                        request.Position.Line + 1,
-                        request.Position.Character + 1,
-                        cancellationToken).ConfigureAwait(false);
-
-            if (symbolDetails is null)
-            {
-                return null;
-            }
-
-            List<MarkedString> symbolInfo = new()
-            {
-                new MarkedString("PowerShell", symbolDetails.SymbolReference.Name)
-            };
-
-            if (!string.IsNullOrEmpty(symbolDetails.Documentation))
-            {
-                symbolInfo.Add(new MarkedString("markdown", symbolDetails.Documentation));
-            }
-
-            return new Hover
-            {
-                Contents = new MarkedStringsOrMarkupContent(symbolInfo),
-                Range = symbolDetails.SymbolReference.NameRegion.ToRange()
-            };
+            symbolInfo.Add(new MarkedString("markdown", symbolDetails.Documentation));
         }
+
+        return new Hover
+        {
+            Contents = new MarkedStringsOrMarkupContent(symbolInfo),
+            Range = symbolDetails.SymbolReference.NameRegion.ToRange()
+        };
     }
 }

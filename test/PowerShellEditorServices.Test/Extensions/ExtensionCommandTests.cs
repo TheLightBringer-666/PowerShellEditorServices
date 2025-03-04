@@ -17,179 +17,178 @@ using Microsoft.PowerShell.EditorServices.Test;
 using Microsoft.PowerShell.EditorServices.Test.Shared;
 using Xunit;
 
-namespace PowerShellEditorServices.Test.Extensions
+namespace PowerShellEditorServices.Test.Extensions;
+
+[Trait("Category", "Extensions")]
+public class ExtensionCommandTests : IAsyncLifetime
 {
-    [Trait("Category", "Extensions")]
-    public class ExtensionCommandTests : IAsyncLifetime
+    private PsesInternalHost psesHost;
+
+    private ExtensionCommandService extensionCommandService;
+
+    public async Task InitializeAsync()
     {
-        private PsesInternalHost psesHost;
+        psesHost = await PsesHostFactory.Create(NullLoggerFactory.Instance);
+        ExtensionService extensionService = new(
+            languageServer: null,
+            serviceProvider: null,
+            editorOperations: null,
+            executionService: psesHost);
+        await extensionService.InitializeAsync();
+        extensionCommandService = new(extensionService);
+    }
 
-        private ExtensionCommandService extensionCommandService;
+    public async Task DisposeAsync() => await psesHost.StopAsync();
 
-        public async Task InitializeAsync()
-        {
-            psesHost = await PsesHostFactory.Create(NullLoggerFactory.Instance);
-            ExtensionService extensionService = new(
-                languageServer: null,
-                serviceProvider: null,
-                editorOperations: null,
-                executionService: psesHost);
-            await extensionService.InitializeAsync();
-            extensionCommandService = new(extensionService);
-        }
+    [Fact]
+    public async Task CanRegisterAndInvokeCommandWithCmdletName()
+    {
+        string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
+        ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
+        EditorContext editorContext = new(
+            editorOperations: null,
+            currentFile,
+            new BufferPosition(line: 1, column: 1),
+            BufferRange.None);
 
-        public async Task DisposeAsync() => await psesHost.StopAsync();
+        EditorCommand commandAdded = null;
+        extensionCommandService.CommandAdded += (_, command) => commandAdded = command;
 
-        [Fact]
-        public async Task CanRegisterAndInvokeCommandWithCmdletName()
-        {
-            string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
-            ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
-            EditorContext editorContext = new(
-                editorOperations: null,
-                currentFile,
-                new BufferPosition(line: 1, column: 1),
-                BufferRange.None);
+        const string commandName = "test.function";
+        const string commandDisplayName = "Function extension";
 
-            EditorCommand commandAdded = null;
-            extensionCommandService.CommandAdded += (_, command) => commandAdded = command;
+        await psesHost.ExecutePSCommandAsync(
+            new PSCommand().AddScript(
+                "function Invoke-Extension { $global:extensionValue = 5 }; " +
+                $"Register-EditorCommand -Name {commandName} -DisplayName \"{commandDisplayName}\" -Function Invoke-Extension"),
+            CancellationToken.None);
 
-            const string commandName = "test.function";
-            const string commandDisplayName = "Function extension";
+        Assert.NotNull(commandAdded);
+        Assert.Equal(commandName, commandAdded.Name);
+        Assert.Equal(commandDisplayName, commandAdded.DisplayName);
 
-            await psesHost.ExecutePSCommandAsync(
-                new PSCommand().AddScript(
-                    "function Invoke-Extension { $global:extensionValue = 5 }; " +
-                    $"Register-EditorCommand -Name {commandName} -DisplayName \"{commandDisplayName}\" -Function Invoke-Extension"),
-                CancellationToken.None);
+        // Invoke the command
+        await extensionCommandService.InvokeCommandAsync(commandName, editorContext);
 
-            Assert.NotNull(commandAdded);
-            Assert.Equal(commandName, commandAdded.Name);
-            Assert.Equal(commandDisplayName, commandAdded.DisplayName);
+        // Assert the expected value
+        PSCommand psCommand = new PSCommand().AddScript("$global:extensionValue");
+        IEnumerable<int> results = await psesHost.ExecutePSCommandAsync<int>(psCommand, CancellationToken.None);
+        Assert.Equal(5, results.FirstOrDefault());
+    }
 
-            // Invoke the command
-            await extensionCommandService.InvokeCommandAsync(commandName, editorContext);
+    [Fact]
+    public async Task CanRegisterAndInvokeCommandWithScriptBlock()
+    {
+        string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
+        ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
+        EditorContext editorContext = new(
+            editorOperations: null,
+            currentFile,
+            new BufferPosition(line: 1, column: 1),
+            BufferRange.None);
 
-            // Assert the expected value
-            PSCommand psCommand = new PSCommand().AddScript("$global:extensionValue");
-            IEnumerable<int> results = await psesHost.ExecutePSCommandAsync<int>(psCommand, CancellationToken.None);
-            Assert.Equal(5, results.FirstOrDefault());
-        }
+        EditorCommand commandAdded = null;
+        extensionCommandService.CommandAdded += (_, command) => commandAdded = command;
 
-        [Fact]
-        public async Task CanRegisterAndInvokeCommandWithScriptBlock()
-        {
-            string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
-            ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
-            EditorContext editorContext = new(
-                editorOperations: null,
-                currentFile,
-                new BufferPosition(line: 1, column: 1),
-                BufferRange.None);
+        const string commandName = "test.scriptblock";
+        const string commandDisplayName = "ScriptBlock extension";
 
-            EditorCommand commandAdded = null;
-            extensionCommandService.CommandAdded += (_, command) => commandAdded = command;
+        await psesHost.ExecutePSCommandAsync(
+            new PSCommand()
+                .AddCommand("Register-EditorCommand")
+                .AddParameter("Name", commandName)
+                .AddParameter("DisplayName", commandDisplayName)
+                .AddParameter("ScriptBlock", ScriptBlock.Create("$global:extensionValue = 10")),
+            CancellationToken.None);
 
-            const string commandName = "test.scriptblock";
-            const string commandDisplayName = "ScriptBlock extension";
+        Assert.NotNull(commandAdded);
+        Assert.Equal(commandName, commandAdded.Name);
+        Assert.Equal(commandDisplayName, commandAdded.DisplayName);
 
-            await psesHost.ExecutePSCommandAsync(
-                new PSCommand()
-                    .AddCommand("Register-EditorCommand")
-                    .AddParameter("Name", commandName)
-                    .AddParameter("DisplayName", commandDisplayName)
-                    .AddParameter("ScriptBlock", ScriptBlock.Create("$global:extensionValue = 10")),
-                CancellationToken.None);
+        // Invoke the command.
+        // TODO: What task was this cancelling?
+        await extensionCommandService.InvokeCommandAsync("test.scriptblock", editorContext);
 
-            Assert.NotNull(commandAdded);
-            Assert.Equal(commandName, commandAdded.Name);
-            Assert.Equal(commandDisplayName, commandAdded.DisplayName);
+        // Assert the expected value
+        PSCommand psCommand = new PSCommand().AddScript("$global:extensionValue");
+        IEnumerable<int> results = await psesHost.ExecutePSCommandAsync<int>(psCommand, CancellationToken.None);
+        Assert.Equal(10, results.FirstOrDefault());
+    }
 
-            // Invoke the command.
-            // TODO: What task was this cancelling?
-            await extensionCommandService.InvokeCommandAsync("test.scriptblock", editorContext);
+    [Fact]
+    public async Task CanUpdateRegisteredCommand()
+    {
+        EditorCommand updatedCommand = null;
+        extensionCommandService.CommandUpdated += (_, command) => updatedCommand = command;
 
-            // Assert the expected value
-            PSCommand psCommand = new PSCommand().AddScript("$global:extensionValue");
-            IEnumerable<int> results = await psesHost.ExecutePSCommandAsync<int>(psCommand, CancellationToken.None);
-            Assert.Equal(10, results.FirstOrDefault());
-        }
+        const string commandName = "test.function";
+        const string commandDisplayName = "Updated function extension";
 
-        [Fact]
-        public async Task CanUpdateRegisteredCommand()
-        {
-            EditorCommand updatedCommand = null;
-            extensionCommandService.CommandUpdated += (_, command) => updatedCommand = command;
+        // Register a command and then update it
+        await psesHost.ExecutePSCommandAsync(
+            new PSCommand().AddScript(
+                "function Invoke-Extension { Write-Output \"Extension output!\" }; " +
+                $"Register-EditorCommand -Name {commandName} -DisplayName \"Old function extension\" -Function Invoke-Extension; " +
+                $"Register-EditorCommand -Name {commandName} -DisplayName \"{commandDisplayName}\" -Function Invoke-Extension"),
+            CancellationToken.None);
 
-            const string commandName = "test.function";
-            const string commandDisplayName = "Updated function extension";
+        // Wait for the add and update events
+        Assert.NotNull(updatedCommand);
+        Assert.Equal(commandName, updatedCommand.Name);
+        Assert.Equal(commandDisplayName, updatedCommand.DisplayName);
+    }
 
-            // Register a command and then update it
-            await psesHost.ExecutePSCommandAsync(
-                new PSCommand().AddScript(
-                    "function Invoke-Extension { Write-Output \"Extension output!\" }; " +
-                    $"Register-EditorCommand -Name {commandName} -DisplayName \"Old function extension\" -Function Invoke-Extension; " +
-                    $"Register-EditorCommand -Name {commandName} -DisplayName \"{commandDisplayName}\" -Function Invoke-Extension"),
-                CancellationToken.None);
+    [Fact]
+    public async Task CanUnregisterCommand()
+    {
+        string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
+        ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
+        EditorContext editorContext = new(
+            editorOperations: null,
+            currentFile,
+            new BufferPosition(line: 1, column: 1),
+            BufferRange.None);
 
-            // Wait for the add and update events
-            Assert.NotNull(updatedCommand);
-            Assert.Equal(commandName, updatedCommand.Name);
-            Assert.Equal(commandDisplayName, updatedCommand.DisplayName);
-        }
+        const string commandName = "test.scriptblock";
+        const string commandDisplayName = "ScriptBlock extension";
 
-        [Fact]
-        public async Task CanUnregisterCommand()
-        {
-            string filePath = TestUtilities.NormalizePath(@"C:\Temp\Test.ps1");
-            ScriptFile currentFile = ScriptFile.Create(new Uri(filePath), "This is a test file", new Version("7.0"));
-            EditorContext editorContext = new(
-                editorOperations: null,
-                currentFile,
-                new BufferPosition(line: 1, column: 1),
-                BufferRange.None);
+        EditorCommand removedCommand = null;
+        extensionCommandService.CommandRemoved += (_, command) => removedCommand = command;
 
-            const string commandName = "test.scriptblock";
-            const string commandDisplayName = "ScriptBlock extension";
+        // Add the command and wait for the add event
+        await psesHost.ExecutePSCommandAsync(
+            new PSCommand()
+                .AddCommand("Register-EditorCommand")
+                .AddParameter("Name", commandName)
+                .AddParameter("DisplayName", commandDisplayName)
+                .AddParameter("ScriptBlock", ScriptBlock.Create("Write-Output \"Extension output!\"")),
+            CancellationToken.None);
 
-            EditorCommand removedCommand = null;
-            extensionCommandService.CommandRemoved += (_, command) => removedCommand = command;
+        // Remove the command and wait for the remove event
+        await psesHost.ExecutePSCommandAsync(
+            new PSCommand().AddCommand("Unregister-EditorCommand").AddParameter("Name", commandName),
+            CancellationToken.None);
 
-            // Add the command and wait for the add event
-            await psesHost.ExecutePSCommandAsync(
-                new PSCommand()
-                    .AddCommand("Register-EditorCommand")
-                    .AddParameter("Name", commandName)
-                    .AddParameter("DisplayName", commandDisplayName)
-                    .AddParameter("ScriptBlock", ScriptBlock.Create("Write-Output \"Extension output!\"")),
-                CancellationToken.None);
+        Assert.NotNull(removedCommand);
+        Assert.Equal(commandName, removedCommand.Name);
+        Assert.Equal(commandDisplayName, removedCommand.DisplayName);
 
-            // Remove the command and wait for the remove event
-            await psesHost.ExecutePSCommandAsync(
-                new PSCommand().AddCommand("Unregister-EditorCommand").AddParameter("Name", commandName),
-                CancellationToken.None);
+        // Ensure that the command has been unregistered
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => extensionCommandService.InvokeCommandAsync("test.scriptblock", editorContext));
+    }
 
-            Assert.NotNull(removedCommand);
-            Assert.Equal(commandName, removedCommand.Name);
-            Assert.Equal(commandDisplayName, removedCommand.DisplayName);
+    [Fact]
+    public async Task CannotRemovePSEditorVariable()
+    {
+        ActionPreferenceStopException exception = await Assert.ThrowsAsync<ActionPreferenceStopException>(
+            () => psesHost.ExecutePSCommandAsync<string>(
+                new PSCommand().AddScript("Remove-Variable psEditor -ErrorAction Stop"),
+                CancellationToken.None)
+        );
 
-            // Ensure that the command has been unregistered
-            await Assert.ThrowsAsync<KeyNotFoundException>(
-                () => extensionCommandService.InvokeCommandAsync("test.scriptblock", editorContext));
-        }
-
-        [Fact]
-        public async Task CannotRemovePSEditorVariable()
-        {
-            ActionPreferenceStopException exception = await Assert.ThrowsAsync<ActionPreferenceStopException>(
-                () => psesHost.ExecutePSCommandAsync<string>(
-                    new PSCommand().AddScript("Remove-Variable psEditor -ErrorAction Stop"),
-                    CancellationToken.None)
-            );
-
-            Assert.Equal(
-                "The running command stopped because the preference variable \"ErrorActionPreference\" or common parameter is set to Stop: Cannot remove variable psEditor because it is constant or read-only. If the variable is read-only, try the operation again specifying the Force option.",
-                exception.Message);
-        }
+        Assert.Equal(
+            "The running command stopped because the preference variable \"ErrorActionPreference\" or common parameter is set to Stop: Cannot remove variable psEditor because it is constant or read-only. If the variable is read-only, try the operation again specifying the Force option.",
+            exception.Message);
     }
 }

@@ -23,83 +23,83 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Workspace;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace PowerShellEditorServices.Test.E2E
+namespace PowerShellEditorServices.Test.E2E;
+
+public class LSPTestsFixture : IAsyncLifetime
 {
-    public class LSPTestsFixture : IAsyncLifetime
+    protected static readonly string s_binDir =
+        Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+    private const bool IsDebugAdapterTests = false;
+
+    public ILanguageClient PsesLanguageClient { get; private set; }
+    public List<LogMessageParams> Messages = new();
+    public List<Diagnostic> Diagnostics = new();
+    internal List<PsesTelemetryEvent> TelemetryEvents = new();
+    public ITestOutputHelper Output { get; set; }
+
+    protected PsesStdioProcess _psesProcess;
+    public int ProcessId => _psesProcess.Id;
+
+    public async Task InitializeAsync()
     {
-        protected static readonly string s_binDir =
-            Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+        LoggerFactory factory = new();
+        _psesProcess = new PsesStdioProcess(factory, IsDebugAdapterTests);
+        await _psesProcess.Start();
 
-        private const bool IsDebugAdapterTests = false;
+        DirectoryInfo testDir =
+            Directory.CreateDirectory(Path.Combine(s_binDir, Path.GetRandomFileName()));
 
-        public ILanguageClient PsesLanguageClient { get; private set; }
-        public List<LogMessageParams> Messages = new();
-        public List<Diagnostic> Diagnostics = new();
-        internal List<PsesTelemetryEvent> TelemetryEvents = new();
-        public ITestOutputHelper Output { get; set; }
-
-        protected PsesStdioProcess _psesProcess;
-        public int ProcessId => _psesProcess.Id;
-
-        public async Task InitializeAsync()
+        PsesLanguageClient = LanguageClient.PreInit(options =>
         {
-            LoggerFactory factory = new();
-            _psesProcess = new PsesStdioProcess(factory, IsDebugAdapterTests);
-            await _psesProcess.Start();
-
-            DirectoryInfo testDir =
-                Directory.CreateDirectory(Path.Combine(s_binDir, Path.GetRandomFileName()));
-
-            PsesLanguageClient = LanguageClient.PreInit(options =>
-            {
-                options
-                    .WithInput(_psesProcess.OutputStream)
-                    .WithOutput(_psesProcess.InputStream)
-                    .WithWorkspaceFolder(DocumentUri.FromFileSystemPath(testDir.FullName), "testdir")
-                    .WithInitializationOptions(new { EnableProfileLoading = false })
-                    .OnPublishDiagnostics(diagnosticParams => Diagnostics.AddRange(diagnosticParams.Diagnostics.Where(d => d != null)))
-                    .OnLogMessage(logMessageParams => {
-                        Output?.WriteLine($"{logMessageParams.Type}: {logMessageParams.Message}");
-                        Messages.Add(logMessageParams);
-                    })
-                    .OnTelemetryEvent(telemetryEventParams => TelemetryEvents.Add(
-                        new PsesTelemetryEvent
-                        {
-                            EventName = (string)telemetryEventParams.ExtensionData["eventName"],
-                            Data = telemetryEventParams.ExtensionData["data"] as JObject
-                        }));
-
-                // Enable all capabilities this this is for testing.
-                // This will be a built in feature of the Omnisharp client at some point.
-                IEnumerable<Type> capabilityTypes = typeof(ICapability).Assembly.GetExportedTypes()
-                    .Where(z => typeof(ICapability).IsAssignableFrom(z) && z.IsClass && !z.IsAbstract);
-                foreach (Type capabilityType in capabilityTypes)
+            options
+                .WithInput(_psesProcess.OutputStream)
+                .WithOutput(_psesProcess.InputStream)
+                .WithWorkspaceFolder(DocumentUri.FromFileSystemPath(testDir.FullName), "testdir")
+                .WithInitializationOptions(new { EnableProfileLoading = false })
+                .OnPublishDiagnostics(diagnosticParams => Diagnostics.AddRange(diagnosticParams.Diagnostics.Where(d => d != null)))
+                .OnLogMessage(logMessageParams =>
                 {
-                    options.WithCapability(Activator.CreateInstance(capabilityType, Array.Empty<object>()) as ICapability);
-                }
-            });
-
-            await PsesLanguageClient.Initialize(CancellationToken.None);
-
-            // Make sure Script Analysis is enabled because we'll need it in the tests.
-            // This also makes sure the configuration is set to default values.
-            PsesLanguageClient.Workspace.DidChangeConfiguration(
-                new DidChangeConfigurationParams
-                {
-                    Settings = JToken.FromObject(new LanguageServerSettingsWrapper
+                    Output?.WriteLine($"{logMessageParams.Type}: {logMessageParams.Message}");
+                    Messages.Add(logMessageParams);
+                })
+                .OnTelemetryEvent(telemetryEventParams => TelemetryEvents.Add(
+                    new PsesTelemetryEvent
                     {
-                        Files = new EditorFileSettings(),
-                        Search = new EditorSearchSettings(),
-                        Powershell = new LanguageServerSettings()
-                    })
-                });
-        }
+                        EventName = (string)telemetryEventParams.ExtensionData["eventName"],
+                        Data = telemetryEventParams.ExtensionData["data"] as JObject
+                    }));
 
-        public async Task DisposeAsync()
-        {
-            await PsesLanguageClient.Shutdown();
-            await _psesProcess.Stop();
-            PsesLanguageClient?.Dispose();
-        }
+            // Enable all capabilities this this is for testing.
+            // This will be a built in feature of the Omnisharp client at some point.
+            IEnumerable<Type> capabilityTypes = typeof(ICapability).Assembly.GetExportedTypes()
+                .Where(z => typeof(ICapability).IsAssignableFrom(z) && z.IsClass && !z.IsAbstract);
+            foreach (Type capabilityType in capabilityTypes)
+            {
+                options.WithCapability(Activator.CreateInstance(capabilityType, Array.Empty<object>()) as ICapability);
+            }
+        });
+
+        await PsesLanguageClient.Initialize(CancellationToken.None);
+
+        // Make sure Script Analysis is enabled because we'll need it in the tests.
+        // This also makes sure the configuration is set to default values.
+        PsesLanguageClient.Workspace.DidChangeConfiguration(
+            new DidChangeConfigurationParams
+            {
+                Settings = JToken.FromObject(new LanguageServerSettingsWrapper
+                {
+                    Files = new EditorFileSettings(),
+                    Search = new EditorSearchSettings(),
+                    Powershell = new LanguageServerSettings()
+                })
+            });
+    }
+
+    public async Task DisposeAsync()
+    {
+        await PsesLanguageClient.Shutdown();
+        await _psesProcess.Stop();
+        PsesLanguageClient?.Dispose();
     }
 }

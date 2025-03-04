@@ -5,109 +5,108 @@ using System;
 using System.Management.Automation;
 using Microsoft.PowerShell.EditorServices.Utility;
 
-namespace Microsoft.PowerShell.EditorServices.Services.DebugAdapter
+namespace Microsoft.PowerShell.EditorServices.Services.DebugAdapter;
+
+/// <summary>
+/// Provides details about a breakpoint that is set in the
+/// PowerShell debugger.
+/// </summary>
+internal sealed class BreakpointDetails : BreakpointDetailsBase
 {
     /// <summary>
-    /// Provides details about a breakpoint that is set in the
-    /// PowerShell debugger.
+    /// Gets the unique ID of the breakpoint.
     /// </summary>
-    internal sealed class BreakpointDetails : BreakpointDetailsBase
+    /// <returns></returns>
+    public int Id { get; private set; }
+
+    /// <summary>
+    /// Gets the source where the breakpoint is located.  Used only for debug purposes.
+    /// </summary>
+    public string Source { get; private set; }
+
+    /// <summary>
+    /// Gets the line number at which the breakpoint is set.
+    /// </summary>
+    public int LineNumber { get; private set; }
+
+    /// <summary>
+    /// Gets the column number at which the breakpoint is set.
+    /// </summary>
+    public int? ColumnNumber { get; private set; }
+
+    public string LogMessage { get; private set; }
+
+    private BreakpointDetails()
     {
-        /// <summary>
-        /// Gets the unique ID of the breakpoint.
-        /// </summary>
-        /// <returns></returns>
-        public int Id { get; private set; }
+    }
 
-        /// <summary>
-        /// Gets the source where the breakpoint is located.  Used only for debug purposes.
-        /// </summary>
-        public string Source { get; private set; }
+    /// <summary>
+    /// Creates an instance of the BreakpointDetails class from the individual
+    /// pieces of breakpoint information provided by the client.
+    /// </summary>
+    /// <param name="source"></param>
+    /// <param name="line"></param>
+    /// <param name="column"></param>
+    /// <param name="condition"></param>
+    /// <param name="hitCondition"></param>
+    /// <param name="logMessage"></param>
+    /// <returns></returns>
+    internal static BreakpointDetails Create(
+        string source,
+        int line,
+        int? column = null,
+        string condition = null,
+        string hitCondition = null,
+        string logMessage = null)
+    {
+        Validate.IsNotNullOrEmptyString(nameof(source), source);
 
-        /// <summary>
-        /// Gets the line number at which the breakpoint is set.
-        /// </summary>
-        public int LineNumber { get; private set; }
-
-        /// <summary>
-        /// Gets the column number at which the breakpoint is set.
-        /// </summary>
-        public int? ColumnNumber { get; private set; }
-
-        public string LogMessage { get; private set; }
-
-        private BreakpointDetails()
+        return new BreakpointDetails
         {
+            Verified = true,
+            Source = source,
+            LineNumber = line,
+            ColumnNumber = column,
+            Condition = condition,
+            HitCondition = hitCondition,
+            LogMessage = logMessage
+        };
+    }
+
+    /// <summary>
+    /// Creates an instance of the BreakpointDetails class from a
+    /// PowerShell Breakpoint object.
+    /// </summary>
+    /// <param name="breakpoint">The Breakpoint instance from which details will be taken.</param>
+    /// <param name="updateType">The BreakpointUpdateType to determine if the breakpoint is verified.</param>
+    /// <returns>A new instance of the BreakpointDetails class.</returns>
+    internal static BreakpointDetails Create(
+        Breakpoint breakpoint,
+        BreakpointUpdateType updateType = BreakpointUpdateType.Set)
+    {
+        Validate.IsNotNull(nameof(breakpoint), breakpoint);
+
+        if (breakpoint is not LineBreakpoint lineBreakpoint)
+        {
+            throw new ArgumentException(
+                "Unexpected breakpoint type: " + breakpoint.GetType().Name);
         }
 
-        /// <summary>
-        /// Creates an instance of the BreakpointDetails class from the individual
-        /// pieces of breakpoint information provided by the client.
-        /// </summary>
-        /// <param name="source"></param>
-        /// <param name="line"></param>
-        /// <param name="column"></param>
-        /// <param name="condition"></param>
-        /// <param name="hitCondition"></param>
-        /// <param name="logMessage"></param>
-        /// <returns></returns>
-        internal static BreakpointDetails Create(
-            string source,
-            int line,
-            int? column = null,
-            string condition = null,
-            string hitCondition = null,
-            string logMessage = null)
+        BreakpointDetails breakpointDetails = new()
         {
-            Validate.IsNotNullOrEmptyString(nameof(source), source);
+            Id = breakpoint.Id,
+            Verified = updateType != BreakpointUpdateType.Disabled,
+            Source = lineBreakpoint.Script,
+            LineNumber = lineBreakpoint.Line,
+            ColumnNumber = lineBreakpoint.Column,
+            Condition = lineBreakpoint.Action?.ToString()
+        };
 
-            return new BreakpointDetails
-            {
-                Verified = true,
-                Source = source,
-                LineNumber = line,
-                ColumnNumber = column,
-                Condition = condition,
-                HitCondition = hitCondition,
-                LogMessage = logMessage
-            };
+        if (lineBreakpoint.Column > 0)
+        {
+            breakpointDetails.ColumnNumber = lineBreakpoint.Column;
         }
 
-        /// <summary>
-        /// Creates an instance of the BreakpointDetails class from a
-        /// PowerShell Breakpoint object.
-        /// </summary>
-        /// <param name="breakpoint">The Breakpoint instance from which details will be taken.</param>
-        /// <param name="updateType">The BreakpointUpdateType to determine if the breakpoint is verified.</param>
-        /// <returns>A new instance of the BreakpointDetails class.</returns>
-        internal static BreakpointDetails Create(
-            Breakpoint breakpoint,
-            BreakpointUpdateType updateType = BreakpointUpdateType.Set)
-        {
-            Validate.IsNotNull(nameof(breakpoint), breakpoint);
-
-            if (breakpoint is not LineBreakpoint lineBreakpoint)
-            {
-                throw new ArgumentException(
-                    "Unexpected breakpoint type: " + breakpoint.GetType().Name);
-            }
-
-            BreakpointDetails breakpointDetails = new()
-            {
-                Id = breakpoint.Id,
-                Verified = updateType != BreakpointUpdateType.Disabled,
-                Source = lineBreakpoint.Script,
-                LineNumber = lineBreakpoint.Line,
-                ColumnNumber = lineBreakpoint.Column,
-                Condition = lineBreakpoint.Action?.ToString()
-            };
-
-            if (lineBreakpoint.Column > 0)
-            {
-                breakpointDetails.ColumnNumber = lineBreakpoint.Column;
-            }
-
-            return breakpointDetails;
-        }
+        return breakpointDetails;
     }
 }

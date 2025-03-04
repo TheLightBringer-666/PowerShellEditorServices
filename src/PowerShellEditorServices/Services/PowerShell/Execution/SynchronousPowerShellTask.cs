@@ -14,403 +14,402 @@ using Microsoft.PowerShell.EditorServices.Services.PowerShell.Utility;
 using Microsoft.PowerShell.EditorServices.Utility;
 using SMA = System.Management.Automation;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Execution
-{
-    internal interface ISynchronousPowerShellTask
-    {
-        PowerShellExecutionOptions PowerShellExecutionOptions { get; }
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Execution;
 
-        void MaybeAddToHistory();
+internal interface ISynchronousPowerShellTask
+{
+    PowerShellExecutionOptions PowerShellExecutionOptions { get; }
+
+    void MaybeAddToHistory();
+}
+
+internal class SynchronousPowerShellTask<TResult> : SynchronousTask<IReadOnlyList<TResult>>, ISynchronousPowerShellTask
+{
+    private static readonly PowerShellExecutionOptions s_defaultPowerShellExecutionOptions = new();
+
+    private readonly ILogger _logger;
+
+    private readonly PsesInternalHost _psesHost;
+
+    private readonly PSCommand _psCommand;
+
+    private SMA.PowerShell _pwsh;
+
+    private PowerShellContextFrame _frame;
+
+    public SynchronousPowerShellTask(
+        ILogger logger,
+        PsesInternalHost psesHost,
+        PSCommand command,
+        PowerShellExecutionOptions executionOptions,
+        CancellationToken cancellationToken)
+        : base(logger, cancellationToken)
+    {
+        _logger = logger;
+        _psesHost = psesHost;
+        _psCommand = command;
+        PowerShellExecutionOptions = executionOptions ?? s_defaultPowerShellExecutionOptions;
     }
 
-    internal class SynchronousPowerShellTask<TResult> : SynchronousTask<IReadOnlyList<TResult>>, ISynchronousPowerShellTask
+    public PowerShellExecutionOptions PowerShellExecutionOptions { get; }
+
+    public override ExecutionOptions ExecutionOptions => PowerShellExecutionOptions;
+
+    public override IReadOnlyList<TResult> Run(CancellationToken cancellationToken)
     {
-        private static readonly PowerShellExecutionOptions s_defaultPowerShellExecutionOptions = new();
-
-        private readonly ILogger _logger;
-
-        private readonly PsesInternalHost _psesHost;
-
-        private readonly PSCommand _psCommand;
-
-        private SMA.PowerShell _pwsh;
-
-        private PowerShellContextFrame _frame;
-
-        public SynchronousPowerShellTask(
-            ILogger logger,
-            PsesInternalHost psesHost,
-            PSCommand command,
-            PowerShellExecutionOptions executionOptions,
-            CancellationToken cancellationToken)
-            : base(logger, cancellationToken)
+        _psesHost.Runspace.ThrowCancelledIfUnusable();
+        PowerShellContextFrame frame = _psesHost.PushPowerShellForExecution();
+        try
         {
-            _logger = logger;
-            _psesHost = psesHost;
-            _psCommand = command;
-            PowerShellExecutionOptions = executionOptions ?? s_defaultPowerShellExecutionOptions;
+            _pwsh = _psesHost.CurrentPowerShell;
+
+            if (PowerShellExecutionOptions.WriteInputToHost)
+            {
+                _psesHost.WriteWithPrompt(_psCommand, cancellationToken);
+            }
+
+            // If we're in a breakpoint it means we're executing either interactive commands in
+            // a debug prompt, or our own special commands to query the PowerShell debugger for
+            // state that we sync with the LSP debugger. The former commands we want to send
+            // through PowerShell's `Debugger.ProcessCommand` so that they work as expected, but
+            // the latter we must not send through it else they pollute the history as this
+            // PowerShell API does not let us exclude them from it. Notably we also need to send
+            // the `prompt` command and our special `list 1 <MaxInt>` through the debugger too.
+            // The former needs the context in order to show `DBG 1>` etc., and the latter is
+            // used to gather the lines when debugging a script that isn't in a file.
+            return _pwsh.Runspace.Debugger.InBreakpoint
+                && (PowerShellExecutionOptions.AddToHistory || IsPromptOrListCommand(_psCommand) || _pwsh.Runspace.RunspaceIsRemote)
+                ? ExecuteInDebugger(cancellationToken)
+                : ExecuteNormally(cancellationToken);
+        }
+        finally
+        {
+            _psesHost.PopPowerShellForExecution(frame);
+        }
+    }
+
+    public override string ToString() => _psCommand.GetInvocationText();
+
+    private static bool IsPromptOrListCommand(PSCommand command)
+    {
+        if (command.Commands.Count is not 1
+            || command.Commands[0] is { IsScript: false } or { Parameters.Count: > 0 })
+        {
+            return false;
         }
 
-        public PowerShellExecutionOptions PowerShellExecutionOptions { get; }
+        string commandText = command.Commands[0].CommandText;
+        return commandText.Equals("prompt", StringComparison.OrdinalIgnoreCase)
+            || commandText.Equals($"list 1 {int.MaxValue}", StringComparison.OrdinalIgnoreCase);
+    }
 
-        public override ExecutionOptions ExecutionOptions => PowerShellExecutionOptions;
-
-        public override IReadOnlyList<TResult> Run(CancellationToken cancellationToken)
+    private IReadOnlyList<TResult> ExecuteNormally(CancellationToken cancellationToken)
+    {
+        _frame = _psesHost.CurrentFrame;
+        if (PowerShellExecutionOptions.WriteOutputToHost)
         {
-            _psesHost.Runspace.ThrowCancelledIfUnusable();
-            PowerShellContextFrame frame = _psesHost.PushPowerShellForExecution();
-            try
-            {
-                _pwsh = _psesHost.CurrentPowerShell;
+            _psCommand.AddOutputCommand();
 
-                if (PowerShellExecutionOptions.WriteInputToHost)
-                {
-                    _psesHost.WriteWithPrompt(_psCommand, cancellationToken);
-                }
-
-                // If we're in a breakpoint it means we're executing either interactive commands in
-                // a debug prompt, or our own special commands to query the PowerShell debugger for
-                // state that we sync with the LSP debugger. The former commands we want to send
-                // through PowerShell's `Debugger.ProcessCommand` so that they work as expected, but
-                // the latter we must not send through it else they pollute the history as this
-                // PowerShell API does not let us exclude them from it. Notably we also need to send
-                // the `prompt` command and our special `list 1 <MaxInt>` through the debugger too.
-                // The former needs the context in order to show `DBG 1>` etc., and the latter is
-                // used to gather the lines when debugging a script that isn't in a file.
-                return _pwsh.Runspace.Debugger.InBreakpoint
-                    && (PowerShellExecutionOptions.AddToHistory || IsPromptOrListCommand(_psCommand) || _pwsh.Runspace.RunspaceIsRemote)
-                    ? ExecuteInDebugger(cancellationToken)
-                    : ExecuteNormally(cancellationToken);
-            }
-            finally
+            // Fix the transcription bug! Here we're fixing immediately before the invocation of
+            // our command, that has had `Out-Default` added to it.
+            if (!_pwsh.Runspace.RunspaceIsRemote)
             {
-                _psesHost.PopPowerShellForExecution(frame);
+                _psesHost.DisableTranscribeOnly();
             }
         }
 
-        public override string ToString() => _psCommand.GetInvocationText();
+        cancellationToken.Register(CancelNormalExecution);
 
-        private static bool IsPromptOrListCommand(PSCommand command)
+        Collection<TResult> result = null;
+        try
         {
-            if (command.Commands.Count is not 1
-                || command.Commands[0] is { IsScript: false } or { Parameters.Count: > 0 })
+            PSInvocationSettings invocationSettings = new()
             {
-                return false;
+                AddToHistory = PowerShellExecutionOptions.AddToHistory,
+            };
+
+            if (PowerShellExecutionOptions.ThrowOnError)
+            {
+                invocationSettings.ErrorActionPreference = ActionPreference.Stop;
             }
 
-            string commandText = command.Commands[0].CommandText;
-            return commandText.Equals("prompt", StringComparison.OrdinalIgnoreCase)
-                || commandText.Equals($"list 1 {int.MaxValue}", StringComparison.OrdinalIgnoreCase);
+            result = _pwsh.InvokeCommand<TResult>(_psCommand, invocationSettings);
+            cancellationToken.ThrowIfCancellationRequested();
         }
-
-        private IReadOnlyList<TResult> ExecuteNormally(CancellationToken cancellationToken)
+        // Allow terminate exceptions to propagate for flow control.
+        catch (TerminateException)
         {
-            _frame = _psesHost.CurrentFrame;
-            if (PowerShellExecutionOptions.WriteOutputToHost)
-            {
-                _psCommand.AddOutputCommand();
-
-                // Fix the transcription bug! Here we're fixing immediately before the invocation of
-                // our command, that has had `Out-Default` added to it.
-                if (!_pwsh.Runspace.RunspaceIsRemote)
-                {
-                    _psesHost.DisableTranscribeOnly();
-                }
-            }
-
-            cancellationToken.Register(CancelNormalExecution);
-
-            Collection<TResult> result = null;
-            try
-            {
-                PSInvocationSettings invocationSettings = new()
-                {
-                    AddToHistory = PowerShellExecutionOptions.AddToHistory,
-                };
-
-                if (PowerShellExecutionOptions.ThrowOnError)
-                {
-                    invocationSettings.ErrorActionPreference = ActionPreference.Stop;
-                }
-
-                result = _pwsh.InvokeCommand<TResult>(_psCommand, invocationSettings);
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-            // Allow terminate exceptions to propagate for flow control.
-            catch (TerminateException)
-            {
-                throw;
-            }
-            // Test if we've been cancelled. If we're remoting, PSRemotingDataStructureException
-            // effectively means the pipeline was stopped.
-            catch (Exception e) when (cancellationToken.IsCancellationRequested || e is PipelineStoppedException || e is PSRemotingDataStructureException)
-            {
-                // ExecuteNormally handles user commands in a debug session. Perhaps we should clean all this up somehow.
-                if (_pwsh.Runspace.Debugger.InBreakpoint)
-                {
-                    StopDebuggerIfRemoteDebugSessionFailed();
-                }
-                throw new OperationCanceledException();
-            }
-            // We only catch RuntimeExceptions here in case writing errors to output was requested
-            // Other errors are bubbled up to the caller
-            catch (RuntimeException e)
-            {
-                if (e is PSRemotingTransportException)
-                {
-                    _ = System.Threading.Tasks.Task.Run(
-                        _psesHost.UnwindCallStack,
-                        CancellationToken.None)
-                        .HandleErrorsAsync(_logger);
-
-                    _psesHost.WaitForExternalDebuggerStops();
-                    throw new OperationCanceledException("The operation was canceled.", e);
-                }
-
-                Logger.LogWarning($"Runtime exception occurred while executing command:{Environment.NewLine}{Environment.NewLine}{e}");
-
-                if (PowerShellExecutionOptions.ThrowOnError)
-                {
-                    throw;
-                }
-
-                PSCommand command = new PSCommand()
-                    .AddOutputCommand()
-                    .AddParameter("InputObject", e.ErrorRecord.AsPSObject());
-
-                if (_pwsh.Runspace.RunspaceStateInfo.IsUsable())
-                {
-                    _pwsh.InvokeCommand(command);
-                }
-                else
-                {
-                    _psesHost.UI.WriteErrorLine(e.ToString());
-                }
-            }
-            finally
-            {
-                if (_pwsh.HadErrors)
-                {
-                    _pwsh.Streams.Error.Clear();
-                }
-            }
-
-            return result;
+            throw;
         }
-
-        private IReadOnlyList<TResult> ExecuteInDebugger(CancellationToken cancellationToken)
+        // Test if we've been cancelled. If we're remoting, PSRemotingDataStructureException
+        // effectively means the pipeline was stopped.
+        catch (Exception e) when (cancellationToken.IsCancellationRequested || e is PipelineStoppedException || e is PSRemotingDataStructureException)
         {
-            cancellationToken.Register(CancelDebugExecution);
-
-            PSDataCollection<PSObject> outputCollection = new();
-
-            // Out-Default doesn't work as needed in the debugger
-            // Instead we add Out-String to the command and collect results in a PSDataCollection
-            // and use the event handler to print output to the UI as its added to that collection
-            if (PowerShellExecutionOptions.WriteOutputToHost)
-            {
-                _psCommand.AddDebugOutputCommand();
-
-                // Use an inline delegate here, since otherwise we need a cast -- allocation < cast
-                outputCollection.DataAdded += (object sender, DataAddedEventArgs args) =>
-                    {
-                        for (int i = args.Index; i < outputCollection.Count; i++)
-                        {
-                            _psesHost.UI.WriteLine(outputCollection[i].ToString());
-                        }
-                    };
-            }
-
-            DebuggerCommandResults debuggerResult = null;
-            try
-            {
-                // In the PowerShell debugger, intrinsic debugger commands are made available, like
-                // "l", "s", "c", etc. Executing those commands produces a result that needs to be
-                // set on the debugger stop event args. So we use the Debugger.ProcessCommand() API
-                // to properly execute commands in the debugger and then call
-                // DebugContext.ProcessDebuggerResult() later to handle the command appropriately
-                //
-                // Unfortunately, this API does not allow us to pass in the InvocationSettings,
-                // which means (for instance) that we cannot instruct it to avoid adding our
-                // debugger implementation's commands to the history. So instead we now only call
-                // `ExecuteInDebugger` for PowerShell's own intrinsic debugger commands.
-                debuggerResult = _pwsh.Runspace.Debugger.ProcessCommand(_psCommand, outputCollection);
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-            // Allow terminate exceptions to propagate for flow control.
-            catch (TerminateException)
-            {
-                throw;
-            }
-            // Test if we've been cancelled. If we're remoting, PSRemotingDataStructureException
-            // effectively means the pipeline was stopped.
-            catch (Exception e) when (cancellationToken.IsCancellationRequested || e is PipelineStoppedException || e is PSRemotingDataStructureException)
+            // ExecuteNormally handles user commands in a debug session. Perhaps we should clean all this up somehow.
+            if (_pwsh.Runspace.Debugger.InBreakpoint)
             {
                 StopDebuggerIfRemoteDebugSessionFailed();
-                throw new OperationCanceledException();
             }
-            // We only catch RuntimeExceptions here in case writing errors to output was requested
-            // Other errors are bubbled up to the caller
-            catch (RuntimeException e)
+            throw new OperationCanceledException();
+        }
+        // We only catch RuntimeExceptions here in case writing errors to output was requested
+        // Other errors are bubbled up to the caller
+        catch (RuntimeException e)
+        {
+            if (e is PSRemotingTransportException)
             {
-                if (e is PSRemotingTransportException)
-                {
-                    _ = System.Threading.Tasks.Task.Run(
-                        _psesHost.UnwindCallStack,
-                        CancellationToken.None)
-                        .HandleErrorsAsync(_logger);
+                _ = System.Threading.Tasks.Task.Run(
+                    _psesHost.UnwindCallStack,
+                    CancellationToken.None)
+                    .HandleErrorsAsync(_logger);
 
-                    _psesHost.WaitForExternalDebuggerStops();
-                    throw new OperationCanceledException("The operation was canceled.", e);
-                }
-
-                Logger.LogWarning($"Runtime exception occurred while executing command:{Environment.NewLine}{Environment.NewLine}{e}");
-
-                if (PowerShellExecutionOptions.ThrowOnError)
-                {
-                    throw;
-                }
-
-                using PSDataCollection<PSObject> errorOutputCollection = new();
-                errorOutputCollection.DataAdding += (object sender, DataAddingEventArgs args)
-                    => _psesHost.UI.WriteLine(args.ItemAdded?.ToString());
-
-                PSCommand command = new PSCommand()
-                    .AddDebugOutputCommand()
-                    .AddParameter("InputObject", e.ErrorRecord.AsPSObject());
-
-                _pwsh.Runspace.Debugger.ProcessCommand(command, errorOutputCollection);
+                _psesHost.WaitForExternalDebuggerStops();
+                throw new OperationCanceledException("The operation was canceled.", e);
             }
-            finally
+
+            Logger.LogWarning($"Runtime exception occurred while executing command:{Environment.NewLine}{Environment.NewLine}{e}");
+
+            if (PowerShellExecutionOptions.ThrowOnError)
             {
-                if (_pwsh.HadErrors)
-                {
-                    _pwsh.Streams.Error.Clear();
-                }
-
-                // Fix the transcription bug! Since we don't depend on `Out-Default` for
-                // `ExecuteDebugger`, we fix the bug here so the original invocation (before the
-                // script is executed) is good to go.
-                if (!_pwsh.Runspace.RunspaceIsRemote)
-                {
-                    _psesHost.DisableTranscribeOnly();
-                }
+                throw;
             }
 
-            _psesHost.DebugContext.ProcessDebuggerResult(debuggerResult);
+            PSCommand command = new PSCommand()
+                .AddOutputCommand()
+                .AddParameter("InputObject", e.ErrorRecord.AsPSObject());
 
-            // Optimization to save wasted computation if we're going to throw the output away anyway
-            if (PowerShellExecutionOptions.WriteOutputToHost)
+            if (_pwsh.Runspace.RunspaceStateInfo.IsUsable())
             {
-                return Array.Empty<TResult>();
+                _pwsh.InvokeCommand(command);
             }
-
-            // If we've been asked for a PSObject, no need to convert
-            if (typeof(TResult) == typeof(PSObject))
+            else
             {
-                return new List<PSObject>(outputCollection) as IReadOnlyList<TResult>;
+                _psesHost.UI.WriteErrorLine(e.ToString());
             }
-
-            // Otherwise, convert things over
-            List<TResult> results = new(outputCollection.Count);
-            foreach (PSObject outputResult in outputCollection)
+        }
+        finally
+        {
+            if (_pwsh.HadErrors)
             {
-                if (LanguagePrimitives.TryConvertTo(outputResult, typeof(TResult), out object result))
-                {
-                    results.Add((TResult)result);
-                }
+                _pwsh.Streams.Error.Clear();
             }
-            return results;
         }
 
-        private void StopDebuggerIfRemoteDebugSessionFailed()
+        return result;
+    }
+
+    private IReadOnlyList<TResult> ExecuteInDebugger(CancellationToken cancellationToken)
+    {
+        cancellationToken.Register(CancelDebugExecution);
+
+        PSDataCollection<PSObject> outputCollection = new();
+
+        // Out-Default doesn't work as needed in the debugger
+        // Instead we add Out-String to the command and collect results in a PSDataCollection
+        // and use the event handler to print output to the UI as its added to that collection
+        if (PowerShellExecutionOptions.WriteOutputToHost)
         {
-            // When remoting to Windows PowerShell,
-            // command cancellation may cancel the remote debug session in a way that the local debug session doesn't detect.
-            // Instead we have to query the remote directly
-            if (_pwsh.Runspace.RunspaceIsRemote)
-            {
-                _pwsh.Runspace.ThrowCancelledIfUnusable();
-                PSCommand assessDebuggerCommand = new PSCommand().AddScript("$Host.Runspace.Debugger.InBreakpoint");
+            _psCommand.AddDebugOutputCommand();
 
-                PSDataCollection<PSObject> outputCollection = new();
-                _pwsh.Runspace.Debugger.ProcessCommand(assessDebuggerCommand, outputCollection);
-
-                foreach (PSObject output in outputCollection)
+            // Use an inline delegate here, since otherwise we need a cast -- allocation < cast
+            outputCollection.DataAdded += (object sender, DataAddedEventArgs args) =>
                 {
-                    if (Equals(output?.BaseObject, false))
+                    for (int i = args.Index; i < outputCollection.Count; i++)
                     {
-                        _psesHost.DebugContext.ProcessDebuggerResult(new DebuggerCommandResults(DebuggerResumeAction.Stop, evaluatedByDebugger: true));
-                        _logger.LogWarning("Cancelling debug session due to remote command cancellation causing the end of remote debugging session");
-                        _psesHost.UI.WriteWarningLine("Debug session aborted by command cancellation. This is a known issue in the Windows PowerShell 5.1 remoting system.");
+                        _psesHost.UI.WriteLine(outputCollection[i].ToString());
                     }
+                };
+        }
+
+        DebuggerCommandResults debuggerResult = null;
+        try
+        {
+            // In the PowerShell debugger, intrinsic debugger commands are made available, like
+            // "l", "s", "c", etc. Executing those commands produces a result that needs to be
+            // set on the debugger stop event args. So we use the Debugger.ProcessCommand() API
+            // to properly execute commands in the debugger and then call
+            // DebugContext.ProcessDebuggerResult() later to handle the command appropriately
+            //
+            // Unfortunately, this API does not allow us to pass in the InvocationSettings,
+            // which means (for instance) that we cannot instruct it to avoid adding our
+            // debugger implementation's commands to the history. So instead we now only call
+            // `ExecuteInDebugger` for PowerShell's own intrinsic debugger commands.
+            debuggerResult = _pwsh.Runspace.Debugger.ProcessCommand(_psCommand, outputCollection);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        // Allow terminate exceptions to propagate for flow control.
+        catch (TerminateException)
+        {
+            throw;
+        }
+        // Test if we've been cancelled. If we're remoting, PSRemotingDataStructureException
+        // effectively means the pipeline was stopped.
+        catch (Exception e) when (cancellationToken.IsCancellationRequested || e is PipelineStoppedException || e is PSRemotingDataStructureException)
+        {
+            StopDebuggerIfRemoteDebugSessionFailed();
+            throw new OperationCanceledException();
+        }
+        // We only catch RuntimeExceptions here in case writing errors to output was requested
+        // Other errors are bubbled up to the caller
+        catch (RuntimeException e)
+        {
+            if (e is PSRemotingTransportException)
+            {
+                _ = System.Threading.Tasks.Task.Run(
+                    _psesHost.UnwindCallStack,
+                    CancellationToken.None)
+                    .HandleErrorsAsync(_logger);
+
+                _psesHost.WaitForExternalDebuggerStops();
+                throw new OperationCanceledException("The operation was canceled.", e);
+            }
+
+            Logger.LogWarning($"Runtime exception occurred while executing command:{Environment.NewLine}{Environment.NewLine}{e}");
+
+            if (PowerShellExecutionOptions.ThrowOnError)
+            {
+                throw;
+            }
+
+            using PSDataCollection<PSObject> errorOutputCollection = new();
+            errorOutputCollection.DataAdding += (object sender, DataAddingEventArgs args)
+                => _psesHost.UI.WriteLine(args.ItemAdded?.ToString());
+
+            PSCommand command = new PSCommand()
+                .AddDebugOutputCommand()
+                .AddParameter("InputObject", e.ErrorRecord.AsPSObject());
+
+            _pwsh.Runspace.Debugger.ProcessCommand(command, errorOutputCollection);
+        }
+        finally
+        {
+            if (_pwsh.HadErrors)
+            {
+                _pwsh.Streams.Error.Clear();
+            }
+
+            // Fix the transcription bug! Since we don't depend on `Out-Default` for
+            // `ExecuteDebugger`, we fix the bug here so the original invocation (before the
+            // script is executed) is good to go.
+            if (!_pwsh.Runspace.RunspaceIsRemote)
+            {
+                _psesHost.DisableTranscribeOnly();
+            }
+        }
+
+        _psesHost.DebugContext.ProcessDebuggerResult(debuggerResult);
+
+        // Optimization to save wasted computation if we're going to throw the output away anyway
+        if (PowerShellExecutionOptions.WriteOutputToHost)
+        {
+            return Array.Empty<TResult>();
+        }
+
+        // If we've been asked for a PSObject, no need to convert
+        if (typeof(TResult) == typeof(PSObject))
+        {
+            return new List<PSObject>(outputCollection) as IReadOnlyList<TResult>;
+        }
+
+        // Otherwise, convert things over
+        List<TResult> results = new(outputCollection.Count);
+        foreach (PSObject outputResult in outputCollection)
+        {
+            if (LanguagePrimitives.TryConvertTo(outputResult, typeof(TResult), out object result))
+            {
+                results.Add((TResult)result);
+            }
+        }
+        return results;
+    }
+
+    private void StopDebuggerIfRemoteDebugSessionFailed()
+    {
+        // When remoting to Windows PowerShell,
+        // command cancellation may cancel the remote debug session in a way that the local debug session doesn't detect.
+        // Instead we have to query the remote directly
+        if (_pwsh.Runspace.RunspaceIsRemote)
+        {
+            _pwsh.Runspace.ThrowCancelledIfUnusable();
+            PSCommand assessDebuggerCommand = new PSCommand().AddScript("$Host.Runspace.Debugger.InBreakpoint");
+
+            PSDataCollection<PSObject> outputCollection = new();
+            _pwsh.Runspace.Debugger.ProcessCommand(assessDebuggerCommand, outputCollection);
+
+            foreach (PSObject output in outputCollection)
+            {
+                if (Equals(output?.BaseObject, false))
+                {
+                    _psesHost.DebugContext.ProcessDebuggerResult(new DebuggerCommandResults(DebuggerResumeAction.Stop, evaluatedByDebugger: true));
+                    _logger.LogWarning("Cancelling debug session due to remote command cancellation causing the end of remote debugging session");
+                    _psesHost.UI.WriteWarningLine("Debug session aborted by command cancellation. This is a known issue in the Windows PowerShell 5.1 remoting system.");
                 }
             }
         }
+    }
 
-        private void CancelNormalExecution()
+    private void CancelNormalExecution()
+    {
+        if (!_pwsh.Runspace.RunspaceStateInfo.IsUsable())
         {
-            if (!_pwsh.Runspace.RunspaceStateInfo.IsUsable())
-            {
-                return;
-            }
-
-            // If we're signaled to exit a runspace then that'll trigger a stop,
-            // if we block on that stop we'll never exit the runspace (
-            // and essentially deadlock).
-            if (_frame?.SessionExiting is true)
-            {
-                _pwsh.BeginStop(null, null);
-                return;
-            }
-
-            try
-            {
-                _pwsh.Stop();
-            }
-            catch (NullReferenceException nre)
-            {
-                _logger.LogError(
-                    nre,
-                    "Null reference exception from PowerShell.Stop received.");
-            }
+            return;
         }
 
-        public void MaybeAddToHistory()
+        // If we're signaled to exit a runspace then that'll trigger a stop,
+        // if we block on that stop we'll never exit the runspace (
+        // and essentially deadlock).
+        if (_frame?.SessionExiting is true)
         {
-            // Do not add PSES internal commands to history. Also exclude input that came from the
-            // REPL (e.g. PSReadLine) as it handles history itself in that scenario.
-            if (PowerShellExecutionOptions is { AddToHistory: false } or { FromRepl: true })
-            {
-                return;
-            }
-
-            // Only add pure script commands with no arguments to interactive history.
-            if (_psCommand.Commands is { Count: not 1 }
-                || _psCommand.Commands[0] is { Parameters.Count: not 0 } or { IsScript: false })
-            {
-                return;
-            }
-
-            try
-            {
-                _psesHost.AddToHistory(_psCommand.Commands[0].CommandText);
-            }
-            catch
-            {
-                // Ignore exceptions as the user can register a script-block predicate that
-                // determines if the command should be added to history.
-            }
+            _pwsh.BeginStop(null, null);
+            return;
         }
 
-        private void CancelDebugExecution()
+        try
         {
-            if (!_pwsh.Runspace.RunspaceStateInfo.IsUsable())
-            {
-                return;
-            }
-
-            _pwsh.Runspace.Debugger.StopProcessCommand();
+            _pwsh.Stop();
         }
+        catch (NullReferenceException nre)
+        {
+            _logger.LogError(
+                nre,
+                "Null reference exception from PowerShell.Stop received.");
+        }
+    }
+
+    public void MaybeAddToHistory()
+    {
+        // Do not add PSES internal commands to history. Also exclude input that came from the
+        // REPL (e.g. PSReadLine) as it handles history itself in that scenario.
+        if (PowerShellExecutionOptions is { AddToHistory: false } or { FromRepl: true })
+        {
+            return;
+        }
+
+        // Only add pure script commands with no arguments to interactive history.
+        if (_psCommand.Commands is { Count: not 1 }
+            || _psCommand.Commands[0] is { Parameters.Count: not 0 } or { IsScript: false })
+        {
+            return;
+        }
+
+        try
+        {
+            _psesHost.AddToHistory(_psCommand.Commands[0].CommandText);
+        }
+        catch
+        {
+            // Ignore exceptions as the user can register a script-block predicate that
+            // determines if the command should be added to history.
+        }
+    }
+
+    private void CancelDebugExecution()
+    {
+        if (!_pwsh.Runspace.RunspaceStateInfo.IsUsable())
+        {
+            return;
+        }
+
+        _pwsh.Runspace.Debugger.StopProcessCommand();
     }
 }

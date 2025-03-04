@@ -9,26 +9,26 @@ using OmniSharp.Extensions.JsonRpc;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell.Execution;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
+namespace Microsoft.PowerShell.EditorServices.Handlers;
+
+[Serial, Method("powerShell/showHelp")]
+internal interface IShowHelpHandler : IJsonRpcNotificationHandler<ShowHelpParams> { }
+
+internal class ShowHelpParams : IRequest
 {
-    [Serial, Method("powerShell/showHelp")]
-    internal interface IShowHelpHandler : IJsonRpcNotificationHandler<ShowHelpParams> { }
+    public string Text { get; set; }
+}
 
-    internal class ShowHelpParams : IRequest
+internal class ShowHelpHandler : IShowHelpHandler
+{
+    private readonly IInternalPowerShellExecutionService _executionService;
+
+    public ShowHelpHandler(IInternalPowerShellExecutionService executionService) => _executionService = executionService;
+
+    public async Task<Unit> Handle(ShowHelpParams request, CancellationToken cancellationToken)
     {
-        public string Text { get; set; }
-    }
-
-    internal class ShowHelpHandler : IShowHelpHandler
-    {
-        private readonly IInternalPowerShellExecutionService _executionService;
-
-        public ShowHelpHandler(IInternalPowerShellExecutionService executionService) => _executionService = executionService;
-
-        public async Task<Unit> Handle(ShowHelpParams request, CancellationToken cancellationToken)
-        {
-            // TODO: Refactor to not rerun the function definition every time.
-            const string CheckHelpScript = @"
+        // TODO: Refactor to not rerun the function definition every time.
+        const string CheckHelpScript = @"
                 [System.Diagnostics.DebuggerHidden()]
                 [CmdletBinding()]
                 param (
@@ -60,25 +60,24 @@ namespace Microsoft.PowerShell.EditorServices.Handlers
                 return Microsoft.PowerShell.Core\Get-Help $CommandName -Full
                 ";
 
-            string helpParams = request.Text;
-            if (string.IsNullOrEmpty(helpParams)) { helpParams = "Get-Help"; }
+        string helpParams = request.Text;
+        if (string.IsNullOrEmpty(helpParams)) { helpParams = "Get-Help"; }
 
-            PSCommand checkHelpPSCommand = new PSCommand()
-                .AddScript(CheckHelpScript, useLocalScope: true)
-                .AddArgument(helpParams);
+        PSCommand checkHelpPSCommand = new PSCommand()
+            .AddScript(CheckHelpScript, useLocalScope: true)
+            .AddArgument(helpParams);
 
-            // TODO: Rather than print the help in the console, we should send the string back
-            //       to VSCode to display in a help pop-up (or similar)
-            await _executionService.ExecutePSCommandAsync<PSObject>(
-                checkHelpPSCommand,
-                cancellationToken,
-                new PowerShellExecutionOptions
-                {
-                    RequiresForeground = true,
-                    WriteOutputToHost = true,
-                    ThrowOnError = false
-                }).ConfigureAwait(false);
-            return Unit.Value;
-        }
+        // TODO: Rather than print the help in the console, we should send the string back
+        //       to VSCode to display in a help pop-up (or similar)
+        await _executionService.ExecutePSCommandAsync<PSObject>(
+            checkHelpPSCommand,
+            cancellationToken,
+            new PowerShellExecutionOptions
+            {
+                RequiresForeground = true,
+                WriteOutputToHost = true,
+                ThrowOnError = false
+            }).ConfigureAwait(false);
+        return Unit.Value;
     }
 }

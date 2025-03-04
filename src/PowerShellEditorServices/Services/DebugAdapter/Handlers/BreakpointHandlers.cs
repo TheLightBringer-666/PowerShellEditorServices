@@ -17,186 +17,185 @@ using Microsoft.PowerShell.EditorServices.Utility;
 using OmniSharp.Extensions.DebugAdapter.Protocol.Models;
 using OmniSharp.Extensions.DebugAdapter.Protocol.Requests;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
+namespace Microsoft.PowerShell.EditorServices.Handlers;
+
+internal class BreakpointHandlers : ISetFunctionBreakpointsHandler, ISetBreakpointsHandler, ISetExceptionBreakpointsHandler
 {
-    internal class BreakpointHandlers : ISetFunctionBreakpointsHandler, ISetBreakpointsHandler, ISetExceptionBreakpointsHandler
+    private static readonly string[] s_supportedDebugFileExtensions = new[]
     {
-        private static readonly string[] s_supportedDebugFileExtensions = new[]
+        ".ps1",
+        ".psm1"
+    };
+
+    private readonly ILogger _logger;
+    private readonly DebugService _debugService;
+    private readonly DebugStateService _debugStateService;
+    private readonly WorkspaceService _workspaceService;
+    private readonly IRunspaceContext _runspaceContext;
+
+    public BreakpointHandlers(
+        ILoggerFactory loggerFactory,
+        DebugService debugService,
+        DebugStateService debugStateService,
+        WorkspaceService workspaceService,
+        IRunspaceContext runspaceContext)
+    {
+        _logger = loggerFactory.CreateLogger<BreakpointHandlers>();
+        _debugService = debugService;
+        _debugStateService = debugStateService;
+        _workspaceService = workspaceService;
+        _runspaceContext = runspaceContext;
+    }
+
+    public async Task<SetBreakpointsResponse> Handle(SetBreakpointsArguments request, CancellationToken cancellationToken)
+    {
+        if (!_workspaceService.TryGetFile(request.Source.Path, out ScriptFile scriptFile))
         {
-            ".ps1",
-            ".psm1"
-        };
+            string message = _debugStateService.NoDebug ? string.Empty : "Source file could not be accessed, breakpoint not set.";
+            IEnumerable<Breakpoint> srcBreakpoints = request.Breakpoints
+                .Select(srcBkpt => LspDebugUtils.CreateBreakpoint(
+                    srcBkpt, request.Source.Path, message, verified: _debugStateService.NoDebug));
 
-        private readonly ILogger _logger;
-        private readonly DebugService _debugService;
-        private readonly DebugStateService _debugStateService;
-        private readonly WorkspaceService _workspaceService;
-        private readonly IRunspaceContext _runspaceContext;
-
-        public BreakpointHandlers(
-            ILoggerFactory loggerFactory,
-            DebugService debugService,
-            DebugStateService debugStateService,
-            WorkspaceService workspaceService,
-            IRunspaceContext runspaceContext)
-        {
-            _logger = loggerFactory.CreateLogger<BreakpointHandlers>();
-            _debugService = debugService;
-            _debugStateService = debugStateService;
-            _workspaceService = workspaceService;
-            _runspaceContext = runspaceContext;
-        }
-
-        public async Task<SetBreakpointsResponse> Handle(SetBreakpointsArguments request, CancellationToken cancellationToken)
-        {
-            if (!_workspaceService.TryGetFile(request.Source.Path, out ScriptFile scriptFile))
-            {
-                string message = _debugStateService.NoDebug ? string.Empty : "Source file could not be accessed, breakpoint not set.";
-                IEnumerable<Breakpoint> srcBreakpoints = request.Breakpoints
-                    .Select(srcBkpt => LspDebugUtils.CreateBreakpoint(
-                        srcBkpt, request.Source.Path, message, verified: _debugStateService.NoDebug));
-
-                // Return non-verified breakpoint message.
-                return new SetBreakpointsResponse
-                {
-                    Breakpoints = new Container<Breakpoint>(srcBreakpoints)
-                };
-            }
-
-            // Verify source file is a PowerShell script file.
-            if (!IsFileSupportedForBreakpoints(request.Source.Path, scriptFile))
-            {
-                _logger.LogWarning(
-                    $"Attempted to set breakpoints on a non-PowerShell file: {request.Source.Path}");
-
-                string message = _debugStateService.NoDebug ? string.Empty : "Source is not a PowerShell script, breakpoint not set.";
-
-                IEnumerable<Breakpoint> srcBreakpoints = request.Breakpoints
-                    .Select(srcBkpt => LspDebugUtils.CreateBreakpoint(
-                        srcBkpt, request.Source.Path, message, verified: _debugStateService.NoDebug));
-
-                // Return non-verified breakpoint message.
-                return new SetBreakpointsResponse
-                {
-                    Breakpoints = new Container<Breakpoint>(srcBreakpoints)
-                };
-            }
-
-            // At this point, the source file has been verified as a PowerShell script.
-            IReadOnlyList<BreakpointDetails> breakpointDetails = request.Breakpoints
-                .Select((srcBreakpoint) => BreakpointDetails.Create(
-                    scriptFile.FilePath,
-                    srcBreakpoint.Line,
-                    srcBreakpoint.Column,
-                    srcBreakpoint.Condition,
-                    srcBreakpoint.HitCondition,
-                    srcBreakpoint.LogMessage)).ToList();
-
-            // If this is a "run without debugging (Ctrl+F5)" session ignore requests to set breakpoints.
-            IReadOnlyList<BreakpointDetails> updatedBreakpointDetails = breakpointDetails;
-            if (!_debugStateService.NoDebug)
-            {
-                await _debugStateService.WaitForSetBreakpointHandleAsync().ConfigureAwait(false);
-
-                try
-                {
-                    updatedBreakpointDetails =
-                        await _debugService.SetLineBreakpointsAsync(
-                            scriptFile,
-                            breakpointDetails).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    // Log whatever the error is
-                    _logger.LogException($"Caught error while setting breakpoints in SetBreakpoints handler for file {scriptFile?.FilePath}", e);
-                }
-                finally
-                {
-                    _debugStateService.ReleaseSetBreakpointHandle();
-                }
-            }
-
+            // Return non-verified breakpoint message.
             return new SetBreakpointsResponse
             {
-                Breakpoints = new Container<Breakpoint>(updatedBreakpointDetails
-                    .Select(LspDebugUtils.CreateBreakpoint))
+                Breakpoints = new Container<Breakpoint>(srcBreakpoints)
             };
         }
 
-        public async Task<SetFunctionBreakpointsResponse> Handle(SetFunctionBreakpointsArguments request, CancellationToken cancellationToken)
+        // Verify source file is a PowerShell script file.
+        if (!IsFileSupportedForBreakpoints(request.Source.Path, scriptFile))
         {
-            IReadOnlyList<CommandBreakpointDetails> breakpointDetails = request.Breakpoints
-                .Select((funcBreakpoint) => CommandBreakpointDetails.Create(
-                    funcBreakpoint.Name,
-                    funcBreakpoint.Condition)).ToList();
+            _logger.LogWarning(
+                $"Attempted to set breakpoints on a non-PowerShell file: {request.Source.Path}");
 
-            // If this is a "run without debugging (Ctrl+F5)" session ignore requests to set breakpoints.
-            IReadOnlyList<CommandBreakpointDetails> updatedBreakpointDetails = breakpointDetails;
-            if (!_debugStateService.NoDebug)
+            string message = _debugStateService.NoDebug ? string.Empty : "Source is not a PowerShell script, breakpoint not set.";
+
+            IEnumerable<Breakpoint> srcBreakpoints = request.Breakpoints
+                .Select(srcBkpt => LspDebugUtils.CreateBreakpoint(
+                    srcBkpt, request.Source.Path, message, verified: _debugStateService.NoDebug));
+
+            // Return non-verified breakpoint message.
+            return new SetBreakpointsResponse
             {
-                await _debugStateService.WaitForSetBreakpointHandleAsync().ConfigureAwait(false);
-
-                try
-                {
-                    updatedBreakpointDetails = await _debugService.SetCommandBreakpointsAsync(breakpointDetails).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    // Log whatever the error is
-                    _logger.LogException("Caught error while setting command breakpoints", e);
-                }
-                finally
-                {
-                    _debugStateService.ReleaseSetBreakpointHandle();
-                }
-            }
-
-            return new SetFunctionBreakpointsResponse
-            {
-                Breakpoints = updatedBreakpointDetails.Select(LspDebugUtils.CreateBreakpoint).ToList()
+                Breakpoints = new Container<Breakpoint>(srcBreakpoints)
             };
         }
 
-        public Task<SetExceptionBreakpointsResponse> Handle(SetExceptionBreakpointsArguments request, CancellationToken cancellationToken) =>
-            // TODO: When support for exception breakpoints (unhandled and/or first chance)
-            //       is added to the PowerShell engine, wire up the VSCode exception
-            //       breakpoints here using the pattern below to prevent bug regressions.
-            //if (!noDebug)
-            //{
-            //    setBreakpointInProgress = true;
+        // At this point, the source file has been verified as a PowerShell script.
+        IReadOnlyList<BreakpointDetails> breakpointDetails = request.Breakpoints
+            .Select((srcBreakpoint) => BreakpointDetails.Create(
+                scriptFile.FilePath,
+                srcBreakpoint.Line,
+                srcBreakpoint.Column,
+                srcBreakpoint.Condition,
+                srcBreakpoint.HitCondition,
+                srcBreakpoint.LogMessage)).ToList();
 
-            //    try
-            //    {
-            //        // Set exception breakpoints in DebugService
-            //    }
-            //    catch (Exception e)
-            //    {
-            //        // Log whatever the error is
-            //        Logger.WriteException($"Caught error while setting exception breakpoints", e);
-            //    }
-            //    finally
-            //    {
-            //        setBreakpointInProgress = false;
-            //    }
-            //}
-
-            Task.FromResult(new SetExceptionBreakpointsResponse());
-
-        private bool IsFileSupportedForBreakpoints(string requestedPath, ScriptFile resolvedScriptFile)
+        // If this is a "run without debugging (Ctrl+F5)" session ignore requests to set breakpoints.
+        IReadOnlyList<BreakpointDetails> updatedBreakpointDetails = breakpointDetails;
+        if (!_debugStateService.NoDebug)
         {
-            // PowerShell 7 and above support breakpoints in untitled files
-            if (ScriptFile.IsUntitledPath(requestedPath))
-            {
-                return BreakpointApiUtils.SupportsBreakpointApis(_runspaceContext.CurrentRunspace);
-            }
+            await _debugStateService.WaitForSetBreakpointHandleAsync().ConfigureAwait(false);
 
-            if (string.IsNullOrEmpty(resolvedScriptFile?.FilePath))
+            try
             {
-                return false;
+                updatedBreakpointDetails =
+                    await _debugService.SetLineBreakpointsAsync(
+                        scriptFile,
+                        breakpointDetails).ConfigureAwait(false);
             }
-
-            string fileExtension = Path.GetExtension(resolvedScriptFile.FilePath);
-            return s_supportedDebugFileExtensions.Contains(fileExtension, StringComparer.OrdinalIgnoreCase);
+            catch (Exception e)
+            {
+                // Log whatever the error is
+                _logger.LogException($"Caught error while setting breakpoints in SetBreakpoints handler for file {scriptFile?.FilePath}", e);
+            }
+            finally
+            {
+                _debugStateService.ReleaseSetBreakpointHandle();
+            }
         }
+
+        return new SetBreakpointsResponse
+        {
+            Breakpoints = new Container<Breakpoint>(updatedBreakpointDetails
+                .Select(LspDebugUtils.CreateBreakpoint))
+        };
+    }
+
+    public async Task<SetFunctionBreakpointsResponse> Handle(SetFunctionBreakpointsArguments request, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<CommandBreakpointDetails> breakpointDetails = request.Breakpoints
+            .Select((funcBreakpoint) => CommandBreakpointDetails.Create(
+                funcBreakpoint.Name,
+                funcBreakpoint.Condition)).ToList();
+
+        // If this is a "run without debugging (Ctrl+F5)" session ignore requests to set breakpoints.
+        IReadOnlyList<CommandBreakpointDetails> updatedBreakpointDetails = breakpointDetails;
+        if (!_debugStateService.NoDebug)
+        {
+            await _debugStateService.WaitForSetBreakpointHandleAsync().ConfigureAwait(false);
+
+            try
+            {
+                updatedBreakpointDetails = await _debugService.SetCommandBreakpointsAsync(breakpointDetails).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                // Log whatever the error is
+                _logger.LogException("Caught error while setting command breakpoints", e);
+            }
+            finally
+            {
+                _debugStateService.ReleaseSetBreakpointHandle();
+            }
+        }
+
+        return new SetFunctionBreakpointsResponse
+        {
+            Breakpoints = updatedBreakpointDetails.Select(LspDebugUtils.CreateBreakpoint).ToList()
+        };
+    }
+
+    public Task<SetExceptionBreakpointsResponse> Handle(SetExceptionBreakpointsArguments request, CancellationToken cancellationToken) =>
+        // TODO: When support for exception breakpoints (unhandled and/or first chance)
+        //       is added to the PowerShell engine, wire up the VSCode exception
+        //       breakpoints here using the pattern below to prevent bug regressions.
+        //if (!noDebug)
+        //{
+        //    setBreakpointInProgress = true;
+
+        //    try
+        //    {
+        //        // Set exception breakpoints in DebugService
+        //    }
+        //    catch (Exception e)
+        //    {
+        //        // Log whatever the error is
+        //        Logger.WriteException($"Caught error while setting exception breakpoints", e);
+        //    }
+        //    finally
+        //    {
+        //        setBreakpointInProgress = false;
+        //    }
+        //}
+
+        Task.FromResult(new SetExceptionBreakpointsResponse());
+
+    private bool IsFileSupportedForBreakpoints(string requestedPath, ScriptFile resolvedScriptFile)
+    {
+        // PowerShell 7 and above support breakpoints in untitled files
+        if (ScriptFile.IsUntitledPath(requestedPath))
+        {
+            return BreakpointApiUtils.SupportsBreakpointApis(_runspaceContext.CurrentRunspace);
+        }
+
+        if (string.IsNullOrEmpty(resolvedScriptFile?.FilePath))
+        {
+            return false;
+        }
+
+        string fileExtension = Path.GetExtension(resolvedScriptFile.FilePath);
+        return s_supportedDebugFileExtensions.Contains(fileExtension, StringComparer.OrdinalIgnoreCase);
     }
 }

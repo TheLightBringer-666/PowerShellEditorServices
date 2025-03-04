@@ -22,484 +22,483 @@ using Microsoft.PowerShell.EditorServices.Services.Symbols;
 using Microsoft.PowerShell.EditorServices.Services.TextDocument;
 using Microsoft.PowerShell.EditorServices.Utility;
 
-namespace Microsoft.PowerShell.EditorServices.Services
+namespace Microsoft.PowerShell.EditorServices.Services;
+
+/// <summary>
+/// Provides a high-level service for performing code completion and
+/// navigation operations on PowerShell scripts.
+/// </summary>
+internal class SymbolsService
 {
+    #region Private Fields
+
+    private readonly ILogger _logger;
+    private readonly IRunspaceContext _runspaceContext;
+    private readonly IInternalPowerShellExecutionService _executionService;
+    private readonly WorkspaceService _workspaceService;
+
+    private readonly ConcurrentDictionary<string, ICodeLensProvider> _codeLensProviders;
+    private readonly ConcurrentDictionary<string, IDocumentSymbolProvider> _documentSymbolProviders;
+    private readonly ConfigurationService _configurationService;
+    private Task? _workspaceScanCompleted;
+
+    #endregion Private Fields
+    #region Constructors
+
     /// <summary>
-    /// Provides a high-level service for performing code completion and
-    /// navigation operations on PowerShell scripts.
+    /// Constructs an instance of the SymbolsService class and uses
+    /// the given Runspace to execute language service operations.
     /// </summary>
-    internal class SymbolsService
+    /// <param name="factory">An ILoggerFactory implementation used for writing log messages.</param>
+    /// <param name="runspaceContext"></param>
+    /// <param name="executionService"></param>
+    /// <param name="workspaceService"></param>
+    /// <param name="configurationService"></param>
+    public SymbolsService(
+        ILoggerFactory factory,
+        IRunspaceContext runspaceContext,
+        IInternalPowerShellExecutionService executionService,
+        WorkspaceService workspaceService,
+        ConfigurationService configurationService)
     {
-        #region Private Fields
+        _logger = factory.CreateLogger<SymbolsService>();
+        _runspaceContext = runspaceContext;
+        _executionService = executionService;
+        _workspaceService = workspaceService;
+        _configurationService = configurationService;
 
-        private readonly ILogger _logger;
-        private readonly IRunspaceContext _runspaceContext;
-        private readonly IInternalPowerShellExecutionService _executionService;
-        private readonly WorkspaceService _workspaceService;
-
-        private readonly ConcurrentDictionary<string, ICodeLensProvider> _codeLensProviders;
-        private readonly ConcurrentDictionary<string, IDocumentSymbolProvider> _documentSymbolProviders;
-        private readonly ConfigurationService _configurationService;
-        private Task? _workspaceScanCompleted;
-
-        #endregion Private Fields
-        #region Constructors
-
-        /// <summary>
-        /// Constructs an instance of the SymbolsService class and uses
-        /// the given Runspace to execute language service operations.
-        /// </summary>
-        /// <param name="factory">An ILoggerFactory implementation used for writing log messages.</param>
-        /// <param name="runspaceContext"></param>
-        /// <param name="executionService"></param>
-        /// <param name="workspaceService"></param>
-        /// <param name="configurationService"></param>
-        public SymbolsService(
-            ILoggerFactory factory,
-            IRunspaceContext runspaceContext,
-            IInternalPowerShellExecutionService executionService,
-            WorkspaceService workspaceService,
-            ConfigurationService configurationService)
+        _codeLensProviders = new ConcurrentDictionary<string, ICodeLensProvider>();
+        if (configurationService.CurrentSettings.EnableReferencesCodeLens)
         {
-            _logger = factory.CreateLogger<SymbolsService>();
-            _runspaceContext = runspaceContext;
-            _executionService = executionService;
-            _workspaceService = workspaceService;
-            _configurationService = configurationService;
-
-            _codeLensProviders = new ConcurrentDictionary<string, ICodeLensProvider>();
-            if (configurationService.CurrentSettings.EnableReferencesCodeLens)
-            {
-                ReferencesCodeLensProvider referencesProvider = new(_workspaceService, this);
-                _ = _codeLensProviders.TryAdd(referencesProvider.ProviderId, referencesProvider);
-            }
-
-            PesterCodeLensProvider pesterProvider = new(configurationService);
-            _ = _codeLensProviders.TryAdd(pesterProvider.ProviderId, pesterProvider);
-
-            _documentSymbolProviders = new ConcurrentDictionary<string, IDocumentSymbolProvider>();
-            IDocumentSymbolProvider[] documentSymbolProviders = new IDocumentSymbolProvider[]
-            {
-                new ScriptDocumentSymbolProvider(),
-                new PsdDocumentSymbolProvider(),
-                new PesterDocumentSymbolProvider()
-                // NOTE: This specifically does not include RegionDocumentSymbolProvider.
-            };
-
-            foreach (IDocumentSymbolProvider documentSymbolProvider in documentSymbolProviders)
-            {
-                _ = _documentSymbolProviders.TryAdd(documentSymbolProvider.ProviderId, documentSymbolProvider);
-            }
+            ReferencesCodeLensProvider referencesProvider = new(_workspaceService, this);
+            _ = _codeLensProviders.TryAdd(referencesProvider.ProviderId, referencesProvider);
         }
 
-        #endregion Constructors
+        PesterCodeLensProvider pesterProvider = new(configurationService);
+        _ = _codeLensProviders.TryAdd(pesterProvider.ProviderId, pesterProvider);
 
-        public bool TryRegisterCodeLensProvider(ICodeLensProvider codeLensProvider) => _codeLensProviders.TryAdd(codeLensProvider.ProviderId, codeLensProvider);
-
-        public bool DeregisterCodeLensProvider(string providerId) => _codeLensProviders.TryRemove(providerId, out _);
-
-        public IEnumerable<ICodeLensProvider> GetCodeLensProviders() => _codeLensProviders.Values;
-
-        public bool TryRegisterDocumentSymbolProvider(IDocumentSymbolProvider documentSymbolProvider) => _documentSymbolProviders.TryAdd(documentSymbolProvider.ProviderId, documentSymbolProvider);
-
-        public bool DeregisterDocumentSymbolProvider(string providerId) => _documentSymbolProviders.TryRemove(providerId, out _);
-
-        public IEnumerable<IDocumentSymbolProvider> GetDocumentSymbolProviders() => _documentSymbolProviders.Values;
-
-        /// <summary>
-        /// Finds all the symbols in a file, through all document symbol providers.
-        /// </summary>
-        /// <param name="scriptFile">The ScriptFile in which the symbol can be located.</param>
-        public IEnumerable<SymbolReference> FindSymbolsInFile(ScriptFile scriptFile)
+        _documentSymbolProviders = new ConcurrentDictionary<string, IDocumentSymbolProvider>();
+        IDocumentSymbolProvider[] documentSymbolProviders = new IDocumentSymbolProvider[]
         {
-            Validate.IsNotNull(nameof(scriptFile), scriptFile);
+            new ScriptDocumentSymbolProvider(),
+            new PsdDocumentSymbolProvider(),
+            new PesterDocumentSymbolProvider()
+            // NOTE: This specifically does not include RegionDocumentSymbolProvider.
+        };
 
-            foreach (IDocumentSymbolProvider symbolProvider in GetDocumentSymbolProviders())
+        foreach (IDocumentSymbolProvider documentSymbolProvider in documentSymbolProviders)
+        {
+            _ = _documentSymbolProviders.TryAdd(documentSymbolProvider.ProviderId, documentSymbolProvider);
+        }
+    }
+
+    #endregion Constructors
+
+    public bool TryRegisterCodeLensProvider(ICodeLensProvider codeLensProvider) => _codeLensProviders.TryAdd(codeLensProvider.ProviderId, codeLensProvider);
+
+    public bool DeregisterCodeLensProvider(string providerId) => _codeLensProviders.TryRemove(providerId, out _);
+
+    public IEnumerable<ICodeLensProvider> GetCodeLensProviders() => _codeLensProviders.Values;
+
+    public bool TryRegisterDocumentSymbolProvider(IDocumentSymbolProvider documentSymbolProvider) => _documentSymbolProviders.TryAdd(documentSymbolProvider.ProviderId, documentSymbolProvider);
+
+    public bool DeregisterDocumentSymbolProvider(string providerId) => _documentSymbolProviders.TryRemove(providerId, out _);
+
+    public IEnumerable<IDocumentSymbolProvider> GetDocumentSymbolProviders() => _documentSymbolProviders.Values;
+
+    /// <summary>
+    /// Finds all the symbols in a file, through all document symbol providers.
+    /// </summary>
+    /// <param name="scriptFile">The ScriptFile in which the symbol can be located.</param>
+    public IEnumerable<SymbolReference> FindSymbolsInFile(ScriptFile scriptFile)
+    {
+        Validate.IsNotNull(nameof(scriptFile), scriptFile);
+
+        foreach (IDocumentSymbolProvider symbolProvider in GetDocumentSymbolProviders())
+        {
+            foreach (SymbolReference symbol in symbolProvider.ProvideDocumentSymbols(scriptFile))
             {
-                foreach (SymbolReference symbol in symbolProvider.ProvideDocumentSymbols(scriptFile))
+                yield return symbol;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds the symbol in the script given a file location.
+    /// </summary>
+    public static SymbolReference? FindSymbolAtLocation(
+        ScriptFile scriptFile, int line, int column)
+    {
+        Validate.IsNotNull(nameof(scriptFile), scriptFile);
+        return scriptFile.References.TryGetSymbolAtPosition(line, column);
+    }
+
+    // Using a private method here to get a bit more readability and to avoid roslynator
+    // asserting we should use a giant nested ternary.
+    private static string[] GetIdentifiers(string symbolName, SymbolType symbolType, CommandHelpers.AliasMap aliases)
+    {
+        if (!aliases.CmdletToAliases.TryGetValue(symbolName, out List<string> foundAliasList))
+        {
+            return new[] { symbolName };
+        }
+
+        return foundAliasList.Prepend(symbolName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Finds all the references of a symbol in the workspace, resolving aliases.
+    /// TODO: One day use IAsyncEnumerable.
+    /// </summary>
+    public async Task<IEnumerable<SymbolReference>> ScanForReferencesOfSymbolAsync(
+        SymbolReference symbol,
+        CancellationToken cancellationToken = default)
+    {
+        if (symbol is null)
+        {
+            return Enumerable.Empty<SymbolReference>();
+        }
+
+        // We want to handle aliases for functions, but we only want to do the work of getting
+        // the aliases when we must. We can't cache the alias list on first run else we won't
+        // support newly defined aliases.
+        string[] allIdentifiers;
+        if (symbol.Type is SymbolType.Function)
+        {
+            CommandHelpers.AliasMap aliases = await CommandHelpers.GetAliasesAsync(
+                _executionService,
+                cancellationToken).ConfigureAwait(false);
+
+            string targetName = symbol.Id;
+            if (aliases.AliasToCmdlets.TryGetValue(symbol.Id, out string aliasDefinition))
+            {
+                targetName = aliasDefinition;
+            }
+            allIdentifiers = GetIdentifiers(targetName, symbol.Type, aliases);
+        }
+        else
+        {
+            allIdentifiers = new[] { symbol.Id };
+        }
+
+        await ScanWorkspacePSFiles(cancellationToken).ConfigureAwait(false);
+
+        List<SymbolReference> symbols = new();
+
+        foreach (ScriptFile file in _workspaceService.GetOpenedFiles())
+        {
+            foreach (string targetIdentifier in allIdentifiers)
+            {
+                await Task.Yield();
+                if (cancellationToken.IsCancellationRequested)
                 {
-                    yield return symbol;
+                    break;
                 }
+
+                symbols.AddRange(file.References.TryGetReferences(symbol with { Id = targetIdentifier }));
             }
         }
 
-        /// <summary>
-        /// Finds the symbol in the script given a file location.
-        /// </summary>
-        public static SymbolReference? FindSymbolAtLocation(
-            ScriptFile scriptFile, int line, int column)
+        return symbols;
+    }
+
+    /// <summary>
+    /// Finds all the occurrences of a symbol in the script given a file location.
+    /// TODO: Doesn't support aliases, is it worth it?
+    /// </summary>
+    public static IEnumerable<SymbolReference> FindOccurrencesInFile(
+        ScriptFile scriptFile, int line, int column) => scriptFile
+            .References
+            .TryGetReferences(FindSymbolAtLocation(scriptFile, line, column));
+
+    /// <summary>
+    /// Finds the symbol at the location and returns it if it's a declaration.
+    /// </summary>
+    public static SymbolReference? FindSymbolDefinitionAtLocation(
+        ScriptFile scriptFile, int line, int column)
+    {
+        SymbolReference? symbol = FindSymbolAtLocation(scriptFile, line, column);
+        return symbol?.IsDeclaration == true ? symbol : null;
+    }
+
+    /// <summary>
+    /// Finds the details of the symbol at the given script file location.
+    /// </summary>
+    public Task<SymbolDetails?> FindSymbolDetailsAtLocationAsync(
+        ScriptFile scriptFile, int line, int column, CancellationToken cancellationToken)
+    {
+        SymbolReference? symbol = FindSymbolAtLocation(scriptFile, line, column);
+        return symbol is null
+            ? Task.FromResult<SymbolDetails?>(null)
+            : SymbolDetails.CreateAsync(
+                symbol,
+                _runspaceContext.CurrentRunspace,
+                _executionService,
+                cancellationToken);
+    }
+
+    /// <summary>
+    /// Finds the parameter set hints of a specific command (determined by a given file location)
+    /// </summary>
+    public async Task<ParameterSetSignatures?> FindParameterSetsInFileAsync(
+        ScriptFile scriptFile, int line, int column)
+    {
+        // This needs to get by whole extent, not just the name, as it completes e.g.
+        // `Get-Process -` (after the dash).
+        SymbolReference? symbol = scriptFile.References.TryGetSymbolContainingPosition(line, column);
+
+        // If we are not possibly looking at a Function, we don't
+        // need to continue because we won't be able to get the
+        // CommandInfo object.
+        if (symbol?.Type is not SymbolType.Function
+            and not SymbolType.Unknown)
         {
-            Validate.IsNotNull(nameof(scriptFile), scriptFile);
-            return scriptFile.References.TryGetSymbolAtPosition(line, column);
+            return null;
         }
 
-        // Using a private method here to get a bit more readability and to avoid roslynator
-        // asserting we should use a giant nested ternary.
-        private static string[] GetIdentifiers(string symbolName, SymbolType symbolType, CommandHelpers.AliasMap aliases)
-        {
-            if (!aliases.CmdletToAliases.TryGetValue(symbolName, out List<string> foundAliasList))
-            {
-                return new[] { symbolName };
-            }
+        CommandInfo commandInfo =
+            await CommandHelpers.GetCommandInfoAsync(
+                symbol.Id,
+                _runspaceContext.CurrentRunspace,
+                _executionService).ConfigureAwait(false);
 
-            return foundAliasList.Prepend(symbolName)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+        if (commandInfo is null)
+        {
+            return null;
         }
 
-        /// <summary>
-        /// Finds all the references of a symbol in the workspace, resolving aliases.
-        /// TODO: One day use IAsyncEnumerable.
-        /// </summary>
-        public async Task<IEnumerable<SymbolReference>> ScanForReferencesOfSymbolAsync(
-            SymbolReference symbol,
-            CancellationToken cancellationToken = default)
+        try
         {
-            if (symbol is null)
-            {
-                return Enumerable.Empty<SymbolReference>();
-            }
-
-            // We want to handle aliases for functions, but we only want to do the work of getting
-            // the aliases when we must. We can't cache the alias list on first run else we won't
-            // support newly defined aliases.
-            string[] allIdentifiers;
-            if (symbol.Type is SymbolType.Function)
-            {
-                CommandHelpers.AliasMap aliases = await CommandHelpers.GetAliasesAsync(
-                    _executionService,
-                    cancellationToken).ConfigureAwait(false);
-
-                string targetName = symbol.Id;
-                if (aliases.AliasToCmdlets.TryGetValue(symbol.Id, out string aliasDefinition))
-                {
-                    targetName = aliasDefinition;
-                }
-                allIdentifiers = GetIdentifiers(targetName, symbol.Type, aliases);
-            }
-            else
-            {
-                allIdentifiers = new[] { symbol.Id };
-            }
-
-            await ScanWorkspacePSFiles(cancellationToken).ConfigureAwait(false);
-
-            List<SymbolReference> symbols = new();
-
-            foreach (ScriptFile file in _workspaceService.GetOpenedFiles())
-            {
-                foreach (string targetIdentifier in allIdentifiers)
-                {
-                    await Task.Yield();
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        break;
-                    }
-
-                    symbols.AddRange(file.References.TryGetReferences(symbol with { Id = targetIdentifier }));
-                }
-            }
-
-            return symbols;
+            // TODO: We should probably look at 'Parameters' instead of 'ParameterSets'
+            IEnumerable<CommandParameterSetInfo> commandParamSets = commandInfo.ParameterSets;
+            return new ParameterSetSignatures(commandParamSets, symbol);
         }
-
-        /// <summary>
-        /// Finds all the occurrences of a symbol in the script given a file location.
-        /// TODO: Doesn't support aliases, is it worth it?
-        /// </summary>
-        public static IEnumerable<SymbolReference> FindOccurrencesInFile(
-            ScriptFile scriptFile, int line, int column) => scriptFile
-                .References
-                .TryGetReferences(FindSymbolAtLocation(scriptFile, line, column));
-
-        /// <summary>
-        /// Finds the symbol at the location and returns it if it's a declaration.
-        /// </summary>
-        public static SymbolReference? FindSymbolDefinitionAtLocation(
-            ScriptFile scriptFile, int line, int column)
+        catch (RuntimeException e)
         {
-            SymbolReference? symbol = FindSymbolAtLocation(scriptFile, line, column);
-            return symbol?.IsDeclaration == true ? symbol : null;
+            // A RuntimeException will be thrown when an invalid attribute is
+            // on a parameter binding block and then that command/script has
+            // its signatures resolved by typing it into a script.
+            _logger.LogException("RuntimeException encountered while accessing command parameter sets", e);
+
+            return null;
         }
-
-        /// <summary>
-        /// Finds the details of the symbol at the given script file location.
-        /// </summary>
-        public Task<SymbolDetails?> FindSymbolDetailsAtLocationAsync(
-            ScriptFile scriptFile, int line, int column, CancellationToken cancellationToken)
+        catch (InvalidOperationException)
         {
-            SymbolReference? symbol = FindSymbolAtLocation(scriptFile, line, column);
-            return symbol is null
-                ? Task.FromResult<SymbolDetails?>(null)
-                : SymbolDetails.CreateAsync(
-                    symbol,
-                    _runspaceContext.CurrentRunspace,
-                    _executionService,
-                    cancellationToken);
+            // For some commands there are no paramsets (like applications).  Until
+            // the valid command types are better understood, catch this exception
+            // which gets raised when there are no ParameterSets for the command type.
+            return null;
         }
+    }
 
-        /// <summary>
-        /// Finds the parameter set hints of a specific command (determined by a given file location)
-        /// </summary>
-        public async Task<ParameterSetSignatures?> FindParameterSetsInFileAsync(
-            ScriptFile scriptFile, int line, int column)
+    /// <summary>
+    /// Finds the possible definitions of the symbol in the file or workspace.
+    /// TODO: One day use IAsyncEnumerable.
+    /// TODO: Fix searching for definition of built-in commands.
+    /// TODO: Fix "definition" of dot-source (maybe?)
+    /// </summary>
+    public async Task<IEnumerable<SymbolReference>> GetDefinitionOfSymbolAsync(
+        ScriptFile scriptFile,
+        SymbolReference symbol,
+        CancellationToken cancellationToken = default)
+    {
+        List<SymbolReference> declarations = new();
+        declarations.AddRange(scriptFile.References.TryGetReferences(symbol).Where(i => i.IsDeclaration));
+        if (declarations.Count > 0)
         {
-            // This needs to get by whole extent, not just the name, as it completes e.g.
-            // `Get-Process -` (after the dash).
-            SymbolReference? symbol = scriptFile.References.TryGetSymbolContainingPosition(line, column);
-
-            // If we are not possibly looking at a Function, we don't
-            // need to continue because we won't be able to get the
-            // CommandInfo object.
-            if (symbol?.Type is not SymbolType.Function
-                and not SymbolType.Unknown)
-            {
-                return null;
-            }
-
-            CommandInfo commandInfo =
-                await CommandHelpers.GetCommandInfoAsync(
-                    symbol.Id,
-                    _runspaceContext.CurrentRunspace,
-                    _executionService).ConfigureAwait(false);
-
-            if (commandInfo is null)
-            {
-                return null;
-            }
-
-            try
-            {
-                // TODO: We should probably look at 'Parameters' instead of 'ParameterSets'
-                IEnumerable<CommandParameterSetInfo> commandParamSets = commandInfo.ParameterSets;
-                return new ParameterSetSignatures(commandParamSets, symbol);
-            }
-            catch (RuntimeException e)
-            {
-                // A RuntimeException will be thrown when an invalid attribute is
-                // on a parameter binding block and then that command/script has
-                // its signatures resolved by typing it into a script.
-                _logger.LogException("RuntimeException encountered while accessing command parameter sets", e);
-
-                return null;
-            }
-            catch (InvalidOperationException)
-            {
-                // For some commands there are no paramsets (like applications).  Until
-                // the valid command types are better understood, catch this exception
-                // which gets raised when there are no ParameterSets for the command type.
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Finds the possible definitions of the symbol in the file or workspace.
-        /// TODO: One day use IAsyncEnumerable.
-        /// TODO: Fix searching for definition of built-in commands.
-        /// TODO: Fix "definition" of dot-source (maybe?)
-        /// </summary>
-        public async Task<IEnumerable<SymbolReference>> GetDefinitionOfSymbolAsync(
-            ScriptFile scriptFile,
-            SymbolReference symbol,
-            CancellationToken cancellationToken = default)
-        {
-            List<SymbolReference> declarations = new();
-            declarations.AddRange(scriptFile.References.TryGetReferences(symbol).Where(i => i.IsDeclaration));
-            if (declarations.Count > 0)
-            {
-                _logger.LogDebug($"Found possible declaration in same file ${declarations}");
-                return declarations;
-            }
-
-            IEnumerable<SymbolReference> references =
-                await ScanForReferencesOfSymbolAsync(symbol, cancellationToken).ConfigureAwait(false);
-            declarations.AddRange(references.Where(i => i.IsDeclaration));
-
-            _logger.LogDebug($"Found possible declaration in workspace ${declarations}");
+            _logger.LogDebug($"Found possible declaration in same file ${declarations}");
             return declarations;
         }
 
-        internal async Task ScanWorkspacePSFiles(CancellationToken cancellationToken = default)
+        IEnumerable<SymbolReference> references =
+            await ScanForReferencesOfSymbolAsync(symbol, cancellationToken).ConfigureAwait(false);
+        declarations.AddRange(references.Where(i => i.IsDeclaration));
+
+        _logger.LogDebug($"Found possible declaration in workspace ${declarations}");
+        return declarations;
+    }
+
+    internal async Task ScanWorkspacePSFiles(CancellationToken cancellationToken = default)
+    {
+        if (_configurationService.CurrentSettings.AnalyzeOpenDocumentsOnly)
         {
-            if (_configurationService.CurrentSettings.AnalyzeOpenDocumentsOnly)
-            {
-                return;
-            }
-
-            Task? scanTask = _workspaceScanCompleted;
-            // It's not impossible for two scans to start at once but it should be exceedingly
-            // unlikely, and shouldn't break anything if it happens to. So we can save some
-            // lock time by accepting that possibility.
-            if (scanTask is null)
-            {
-                scanTask = Task.Run(
-                    () =>
-                    {
-                        foreach (string file in _workspaceService.EnumeratePSFiles())
-                        {
-                            if (_workspaceService.TryGetFile(file, out ScriptFile scriptFile))
-                            {
-                                scriptFile.References.EnsureInitialized();
-                            }
-                        }
-                    },
-                    CancellationToken.None);
-
-                // Ignore the analyzer yelling that we're not awaiting this task, we'll get there.
-#pragma warning disable CS4014
-                Interlocked.CompareExchange(ref _workspaceScanCompleted, scanTask, null);
-#pragma warning restore CS4014
-            }
-
-            // In the simple case where the task is already completed or the token we're given cannot
-            // be cancelled, do a simple await.
-            if (scanTask.IsCompleted || !cancellationToken.CanBeCanceled)
-            {
-                await scanTask.ConfigureAwait(false);
-                return;
-            }
-
-            // If it's not yet done and we can be cancelled, create a new task to represent the
-            // cancellation. That way we can exit a request that relies on the scan without
-            // having to actually stop the work (and then request it again in a few seconds).
-            //
-            // TODO: There's a new API in net6 that lets you await a task with a cancellation token.
-            //       we should #if that in if feasible.
-            TaskCompletionSource<bool> cancelled = new();
-            _ = cancellationToken.Register(() => cancelled.TrySetCanceled());
-            _ = await Task.WhenAny(scanTask, cancelled.Task).ConfigureAwait(false);
+            return;
         }
 
-        /// <summary>
-        /// Finds a function definition that follows or contains the given line number.
-        /// </summary>
-        public static FunctionDefinitionAst? GetFunctionDefinitionForHelpComment(
-            ScriptFile scriptFile,
-            int line,
-            out string? helpLocation)
+        Task? scanTask = _workspaceScanCompleted;
+        // It's not impossible for two scans to start at once but it should be exceedingly
+        // unlikely, and shouldn't break anything if it happens to. So we can save some
+        // lock time by accepting that possibility.
+        if (scanTask is null)
         {
-            Validate.IsNotNull(nameof(scriptFile), scriptFile);
-            // check if the next line contains a function definition
-            FunctionDefinitionAst? funcDefnAst = GetFunctionDefinitionAtLine(scriptFile, line + 1);
-            if (funcDefnAst is not null)
-            {
-                helpLocation = "before";
-                return funcDefnAst;
-            }
-
-            // find all the script definitions that contain the line `lineNumber`
-            IEnumerable<Ast> foundAsts = scriptFile.ScriptAst.FindAll(
-                ast =>
+            scanTask = Task.Run(
+                () =>
                 {
-                    if (ast is not FunctionDefinitionAst fdAst)
+                    foreach (string file in _workspaceService.EnumeratePSFiles())
                     {
-                        return false;
+                        if (_workspaceService.TryGetFile(file, out ScriptFile scriptFile))
+                        {
+                            scriptFile.References.EnsureInitialized();
+                        }
                     }
-
-                    return fdAst.Body.Extent.StartLineNumber < line &&
-                        fdAst.Body.Extent.EndLineNumber > line;
                 },
-                true);
+                CancellationToken.None);
 
-            if (foundAsts?.Any() != true)
-            {
-                helpLocation = null;
-                return null;
-            }
+            // Ignore the analyzer yelling that we're not awaiting this task, we'll get there.
+#pragma warning disable CS4014
+            Interlocked.CompareExchange(ref _workspaceScanCompleted, scanTask, null);
+#pragma warning restore CS4014
+        }
 
-            // of all the function definitions found, return the innermost function
-            // definition that contains `lineNumber`
-            foreach (FunctionDefinitionAst foundAst in foundAsts.Cast<FunctionDefinitionAst>())
+        // In the simple case where the task is already completed or the token we're given cannot
+        // be cancelled, do a simple await.
+        if (scanTask.IsCompleted || !cancellationToken.CanBeCanceled)
+        {
+            await scanTask.ConfigureAwait(false);
+            return;
+        }
+
+        // If it's not yet done and we can be cancelled, create a new task to represent the
+        // cancellation. That way we can exit a request that relies on the scan without
+        // having to actually stop the work (and then request it again in a few seconds).
+        //
+        // TODO: There's a new API in net6 that lets you await a task with a cancellation token.
+        //       we should #if that in if feasible.
+        TaskCompletionSource<bool> cancelled = new();
+        _ = cancellationToken.Register(() => cancelled.TrySetCanceled());
+        _ = await Task.WhenAny(scanTask, cancelled.Task).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Finds a function definition that follows or contains the given line number.
+    /// </summary>
+    public static FunctionDefinitionAst? GetFunctionDefinitionForHelpComment(
+        ScriptFile scriptFile,
+        int line,
+        out string? helpLocation)
+    {
+        Validate.IsNotNull(nameof(scriptFile), scriptFile);
+        // check if the next line contains a function definition
+        FunctionDefinitionAst? funcDefnAst = GetFunctionDefinitionAtLine(scriptFile, line + 1);
+        if (funcDefnAst is not null)
+        {
+            helpLocation = "before";
+            return funcDefnAst;
+        }
+
+        // find all the script definitions that contain the line `lineNumber`
+        IEnumerable<Ast> foundAsts = scriptFile.ScriptAst.FindAll(
+            ast =>
             {
-                if (funcDefnAst is null)
+                if (ast is not FunctionDefinitionAst fdAst)
                 {
-                    funcDefnAst = foundAst;
-                    continue;
+                    return false;
                 }
 
-                if (funcDefnAst.Extent.StartOffset >= foundAst.Extent.StartOffset
-                    && funcDefnAst.Extent.EndOffset <= foundAst.Extent.EndOffset)
-                {
-                    funcDefnAst = foundAst;
-                }
-            }
+                return fdAst.Body.Extent.StartLineNumber < line &&
+                    fdAst.Body.Extent.EndLineNumber > line;
+            },
+            true);
 
-            // TODO: use tokens to check for non empty character instead of just checking for line offset
-            if (funcDefnAst?.Body.Extent.StartLineNumber == line - 1)
-            {
-                helpLocation = "begin";
-                return funcDefnAst;
-            }
-
-            if (funcDefnAst?.Body.Extent.EndLineNumber == line + 1)
-            {
-                helpLocation = "end";
-                return funcDefnAst;
-            }
-
-            // If we didn't find a function definition, then return null
+        if (foundAsts?.Any() != true)
+        {
             helpLocation = null;
             return null;
         }
 
-        /// <summary>
-        /// Gets the function defined on a given line.
-        /// TODO: Remove this.
-        /// </summary>
-        public static FunctionDefinitionAst? GetFunctionDefinitionAtLine(
-            ScriptFile scriptFile,
-            int lineNumber)
+        // of all the function definitions found, return the innermost function
+        // definition that contains `lineNumber`
+        foreach (FunctionDefinitionAst foundAst in foundAsts.Cast<FunctionDefinitionAst>())
         {
-            Ast functionDefinitionAst = scriptFile.ScriptAst.Find(
-                ast => ast is FunctionDefinitionAst && ast.Extent.StartLineNumber == lineNumber,
-                true);
-
-            return functionDefinitionAst as FunctionDefinitionAst;
-        }
-
-        internal void OnConfigurationUpdated(object _, LanguageServerSettings e)
-        {
-            if (e.AnalyzeOpenDocumentsOnly)
+            if (funcDefnAst is null)
             {
-                Task? scanInProgress = _workspaceScanCompleted;
-                if (scanInProgress is not null)
-                {
-                    // Wait until after the scan completes to close unopened files.
-                    _ = scanInProgress.ContinueWith(_ => CloseUnopenedFiles(), TaskScheduler.Default);
-                }
-                else
-                {
-                    CloseUnopenedFiles();
-                }
-
-                _workspaceScanCompleted = null;
-
-                void CloseUnopenedFiles()
-                {
-                    foreach (ScriptFile scriptFile in _workspaceService.GetOpenedFiles())
-                    {
-                        if (scriptFile.IsOpen)
-                        {
-                            continue;
-                        }
-
-                        _workspaceService.CloseFile(scriptFile);
-                    }
-                }
+                funcDefnAst = foundAst;
+                continue;
             }
 
-            if (e.EnableReferencesCodeLens)
+            if (funcDefnAst.Extent.StartOffset >= foundAst.Extent.StartOffset
+                && funcDefnAst.Extent.EndOffset <= foundAst.Extent.EndOffset)
             {
-                if (_codeLensProviders.ContainsKey(ReferencesCodeLensProvider.Id))
-                {
-                    return;
-                }
+                funcDefnAst = foundAst;
+            }
+        }
 
-                TryRegisterCodeLensProvider(new ReferencesCodeLensProvider(_workspaceService, this));
+        // TODO: use tokens to check for non empty character instead of just checking for line offset
+        if (funcDefnAst?.Body.Extent.StartLineNumber == line - 1)
+        {
+            helpLocation = "begin";
+            return funcDefnAst;
+        }
+
+        if (funcDefnAst?.Body.Extent.EndLineNumber == line + 1)
+        {
+            helpLocation = "end";
+            return funcDefnAst;
+        }
+
+        // If we didn't find a function definition, then return null
+        helpLocation = null;
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the function defined on a given line.
+    /// TODO: Remove this.
+    /// </summary>
+    public static FunctionDefinitionAst? GetFunctionDefinitionAtLine(
+        ScriptFile scriptFile,
+        int lineNumber)
+    {
+        Ast functionDefinitionAst = scriptFile.ScriptAst.Find(
+            ast => ast is FunctionDefinitionAst && ast.Extent.StartLineNumber == lineNumber,
+            true);
+
+        return functionDefinitionAst as FunctionDefinitionAst;
+    }
+
+    internal void OnConfigurationUpdated(object _, LanguageServerSettings e)
+    {
+        if (e.AnalyzeOpenDocumentsOnly)
+        {
+            Task? scanInProgress = _workspaceScanCompleted;
+            if (scanInProgress is not null)
+            {
+                // Wait until after the scan completes to close unopened files.
+                _ = scanInProgress.ContinueWith(_ => CloseUnopenedFiles(), TaskScheduler.Default);
+            }
+            else
+            {
+                CloseUnopenedFiles();
+            }
+
+            _workspaceScanCompleted = null;
+
+            void CloseUnopenedFiles()
+            {
+                foreach (ScriptFile scriptFile in _workspaceService.GetOpenedFiles())
+                {
+                    if (scriptFile.IsOpen)
+                    {
+                        continue;
+                    }
+
+                    _workspaceService.CloseFile(scriptFile);
+                }
+            }
+        }
+
+        if (e.EnableReferencesCodeLens)
+        {
+            if (_codeLensProviders.ContainsKey(ReferencesCodeLensProvider.Id))
+            {
                 return;
             }
 
-            DeregisterCodeLensProvider(ReferencesCodeLensProvider.Id);
+            TryRegisterCodeLensProvider(new ReferencesCodeLensProvider(_workspaceService, this));
+            return;
         }
+
+        DeregisterCodeLensProvider(ReferencesCodeLensProvider.Id);
     }
 }

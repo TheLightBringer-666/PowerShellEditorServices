@@ -7,124 +7,123 @@ using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Execution
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Execution;
+
+internal interface ISynchronousTask
 {
-    internal interface ISynchronousTask
+    bool IsCanceled { get; }
+
+    void ExecuteSynchronously(CancellationToken threadCancellationToken);
+
+    ExecutionOptions ExecutionOptions { get; }
+}
+
+internal abstract class SynchronousTask<TResult> : ISynchronousTask
+{
+    private readonly TaskCompletionSource<TResult> _taskCompletionSource;
+
+    private readonly CancellationToken _taskRequesterCancellationToken;
+
+    private bool _executionCanceled;
+
+    private TResult _result;
+
+    private ExceptionDispatchInfo _exceptionInfo;
+
+    protected SynchronousTask(
+        ILogger logger,
+        CancellationToken cancellationToken)
     {
-        bool IsCanceled { get; }
-
-        void ExecuteSynchronously(CancellationToken threadCancellationToken);
-
-        ExecutionOptions ExecutionOptions { get; }
+        Logger = logger;
+        _taskCompletionSource = new TaskCompletionSource<TResult>();
+        _taskRequesterCancellationToken = cancellationToken;
+        _executionCanceled = false;
     }
 
-    internal abstract class SynchronousTask<TResult> : ISynchronousTask
+    protected ILogger Logger { get; }
+
+    public Task<TResult> Task => _taskCompletionSource.Task;
+
+    // Sometimes we need the result of task run on the same thread,
+    // which this property allows us to do.
+    public TResult Result
     {
-        private readonly TaskCompletionSource<TResult> _taskCompletionSource;
-
-        private readonly CancellationToken _taskRequesterCancellationToken;
-
-        private bool _executionCanceled;
-
-        private TResult _result;
-
-        private ExceptionDispatchInfo _exceptionInfo;
-
-        protected SynchronousTask(
-            ILogger logger,
-            CancellationToken cancellationToken)
+        get
         {
-            Logger = logger;
-            _taskCompletionSource = new TaskCompletionSource<TResult>();
-            _taskRequesterCancellationToken = cancellationToken;
-            _executionCanceled = false;
-        }
-
-        protected ILogger Logger { get; }
-
-        public Task<TResult> Task => _taskCompletionSource.Task;
-
-        // Sometimes we need the result of task run on the same thread,
-        // which this property allows us to do.
-        public TResult Result
-        {
-            get
+            if (_executionCanceled)
             {
-                if (_executionCanceled)
-                {
-                    throw new OperationCanceledException();
-                }
-
-                _exceptionInfo?.Throw();
-
-                return _result;
-            }
-        }
-
-        public bool IsCanceled => _executionCanceled || _taskRequesterCancellationToken.IsCancellationRequested;
-
-        public abstract ExecutionOptions ExecutionOptions { get; }
-
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "RCS1158", Justification = "Field is not type-dependent")]
-        internal static readonly ExecutionOptions s_defaultExecutionOptions = new();
-
-        public abstract TResult Run(CancellationToken cancellationToken);
-
-        public abstract override string ToString();
-
-        public void ExecuteSynchronously(CancellationToken executorCancellationToken)
-        {
-            if (IsCanceled)
-            {
-                SetCanceled();
-                return;
+                throw new OperationCanceledException();
             }
 
-            using CancellationTokenSource cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(_taskRequesterCancellationToken, executorCancellationToken);
-            if (cancellationSource.IsCancellationRequested)
-            {
-                SetCanceled();
-                return;
-            }
+            _exceptionInfo?.Throw();
 
-            try
-            {
-                TResult result = Run(cancellationSource.Token);
-                SetResult(result);
-            }
-            catch (OperationCanceledException)
-            {
-                SetCanceled();
-            }
-            catch (Exception e)
-            {
-                SetException(e);
-            }
+            return _result;
         }
+    }
 
-        public TResult ExecuteAndGetResult(CancellationToken cancellationToken)
+    public bool IsCanceled => _executionCanceled || _taskRequesterCancellationToken.IsCancellationRequested;
+
+    public abstract ExecutionOptions ExecutionOptions { get; }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "RCS1158", Justification = "Field is not type-dependent")]
+    internal static readonly ExecutionOptions s_defaultExecutionOptions = new();
+
+    public abstract TResult Run(CancellationToken cancellationToken);
+
+    public abstract override string ToString();
+
+    public void ExecuteSynchronously(CancellationToken executorCancellationToken)
+    {
+        if (IsCanceled)
         {
-            ExecuteSynchronously(cancellationToken);
-            return Result;
+            SetCanceled();
+            return;
         }
 
-        private void SetCanceled()
+        using CancellationTokenSource cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(_taskRequesterCancellationToken, executorCancellationToken);
+        if (cancellationSource.IsCancellationRequested)
         {
-            _executionCanceled = true;
-            _taskCompletionSource.SetCanceled();
+            SetCanceled();
+            return;
         }
 
-        private void SetException(Exception e)
+        try
         {
-            // We use this to capture the original stack trace so that exceptions will be useful later
-            _exceptionInfo = ExceptionDispatchInfo.Capture(e);
-            _taskCompletionSource.SetException(e);
+            TResult result = Run(cancellationSource.Token);
+            SetResult(result);
         }
+        catch (OperationCanceledException)
+        {
+            SetCanceled();
+        }
+        catch (Exception e)
+        {
+            SetException(e);
+        }
+    }
 
-        private void SetResult(TResult result)
-        {
-            _result = result;
-            _taskCompletionSource.SetResult(result);
-        }
+    public TResult ExecuteAndGetResult(CancellationToken cancellationToken)
+    {
+        ExecuteSynchronously(cancellationToken);
+        return Result;
+    }
+
+    private void SetCanceled()
+    {
+        _executionCanceled = true;
+        _taskCompletionSource.SetCanceled();
+    }
+
+    private void SetException(Exception e)
+    {
+        // We use this to capture the original stack trace so that exceptions will be useful later
+        _exceptionInfo = ExceptionDispatchInfo.Capture(e);
+        _taskCompletionSource.SetException(e);
+    }
+
+    private void SetResult(TResult result)
+    {
+        _result = result;
+        _taskCompletionSource.SetResult(result);
     }
 }

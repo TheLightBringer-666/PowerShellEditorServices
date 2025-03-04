@@ -8,90 +8,89 @@ using System.Threading.Tasks;
 using System;
 using Microsoft.PowerShell.EditorServices.Services.PowerShell.Host;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Runspace
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Runspace;
+
+using System.Management.Automation;
+using System.Management.Automation.Runspaces;
+
+internal class RunspaceInfo : IRunspaceInfo
 {
-    using System.Management.Automation;
-    using System.Management.Automation.Runspaces;
-
-    internal class RunspaceInfo : IRunspaceInfo
+    public static RunspaceInfo CreateFromLocalPowerShell(
+        ILogger logger,
+        PowerShell pwsh)
     {
-        public static RunspaceInfo CreateFromLocalPowerShell(
-            ILogger logger,
-            PowerShell pwsh)
-        {
-            PowerShellVersionDetails psVersionDetails = PowerShellVersionDetails.GetVersionDetails(logger, pwsh);
-            SessionDetails sessionDetails = SessionDetails.GetFromPowerShell(pwsh);
+        PowerShellVersionDetails psVersionDetails = PowerShellVersionDetails.GetVersionDetails(logger, pwsh);
+        SessionDetails sessionDetails = SessionDetails.GetFromPowerShell(pwsh);
 
-            return new RunspaceInfo(
-                pwsh.Runspace,
-                RunspaceOrigin.Local,
-                psVersionDetails,
-                sessionDetails,
-                isRemote: false);
+        return new RunspaceInfo(
+            pwsh.Runspace,
+            RunspaceOrigin.Local,
+            psVersionDetails,
+            sessionDetails,
+            isRemote: false);
+    }
+
+    public static RunspaceInfo CreateFromPowerShell(
+        ILogger logger,
+        PowerShell pwsh,
+        string localComputerName)
+    {
+        PowerShellVersionDetails psVersionDetails = PowerShellVersionDetails.GetVersionDetails(logger, pwsh);
+        SessionDetails sessionDetails = SessionDetails.GetFromPowerShell(pwsh);
+
+        bool isOnLocalMachine = string.Equals(sessionDetails.ComputerName, localComputerName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sessionDetails.ComputerName, "localhost", StringComparison.OrdinalIgnoreCase);
+
+        RunspaceOrigin runspaceOrigin = RunspaceOrigin.Local;
+        if (pwsh.Runspace.RunspaceIsRemote)
+        {
+            runspaceOrigin = pwsh.Runspace.ConnectionInfo is NamedPipeConnectionInfo
+                ? RunspaceOrigin.EnteredProcess
+                : RunspaceOrigin.PSSession;
         }
 
-        public static RunspaceInfo CreateFromPowerShell(
-            ILogger logger,
-            PowerShell pwsh,
-            string localComputerName)
-        {
-            PowerShellVersionDetails psVersionDetails = PowerShellVersionDetails.GetVersionDetails(logger, pwsh);
-            SessionDetails sessionDetails = SessionDetails.GetFromPowerShell(pwsh);
+        return new RunspaceInfo(
+            pwsh.Runspace,
+            runspaceOrigin,
+            psVersionDetails,
+            sessionDetails,
+            isRemote: !isOnLocalMachine);
+    }
 
-            bool isOnLocalMachine = string.Equals(sessionDetails.ComputerName, localComputerName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(sessionDetails.ComputerName, "localhost", StringComparison.OrdinalIgnoreCase);
+    private DscBreakpointCapability _dscBreakpointCapability;
 
-            RunspaceOrigin runspaceOrigin = RunspaceOrigin.Local;
-            if (pwsh.Runspace.RunspaceIsRemote)
-            {
-                runspaceOrigin = pwsh.Runspace.ConnectionInfo is NamedPipeConnectionInfo
-                    ? RunspaceOrigin.EnteredProcess
-                    : RunspaceOrigin.PSSession;
-            }
+    public RunspaceInfo(
+        Runspace runspace,
+        RunspaceOrigin origin,
+        PowerShellVersionDetails powerShellVersionDetails,
+        SessionDetails sessionDetails,
+        bool isRemote)
+    {
+        Runspace = runspace;
+        RunspaceOrigin = origin;
+        SessionDetails = sessionDetails;
+        PowerShellVersionDetails = powerShellVersionDetails;
+        IsOnRemoteMachine = isRemote;
+    }
 
-            return new RunspaceInfo(
-                pwsh.Runspace,
-                runspaceOrigin,
-                psVersionDetails,
-                sessionDetails,
-                isRemote: !isOnLocalMachine);
-        }
+    public RunspaceOrigin RunspaceOrigin { get; }
 
-        private DscBreakpointCapability _dscBreakpointCapability;
+    public PowerShellVersionDetails PowerShellVersionDetails { get; }
 
-        public RunspaceInfo(
-            Runspace runspace,
-            RunspaceOrigin origin,
-            PowerShellVersionDetails powerShellVersionDetails,
-            SessionDetails sessionDetails,
-            bool isRemote)
-        {
-            Runspace = runspace;
-            RunspaceOrigin = origin;
-            SessionDetails = sessionDetails;
-            PowerShellVersionDetails = powerShellVersionDetails;
-            IsOnRemoteMachine = isRemote;
-        }
+    public SessionDetails SessionDetails { get; }
 
-        public RunspaceOrigin RunspaceOrigin { get; }
+    public Runspace Runspace { get; }
 
-        public PowerShellVersionDetails PowerShellVersionDetails { get; }
+    public bool IsOnRemoteMachine { get; }
 
-        public SessionDetails SessionDetails { get; }
-
-        public Runspace Runspace { get; }
-
-        public bool IsOnRemoteMachine { get; }
-
-        public async Task<DscBreakpointCapability> GetDscBreakpointCapabilityAsync(
-            ILogger logger,
-            PsesInternalHost psesHost)
-        {
-            return _dscBreakpointCapability ??= await DscBreakpointCapability.GetDscCapabilityAsync(
-                    logger,
-                    this,
-                    psesHost)
-                    .ConfigureAwait(false);
-        }
+    public async Task<DscBreakpointCapability> GetDscBreakpointCapabilityAsync(
+        ILogger logger,
+        PsesInternalHost psesHost)
+    {
+        return _dscBreakpointCapability ??= await DscBreakpointCapability.GetDscCapabilityAsync(
+                logger,
+                this,
+                psesHost)
+                .ConfigureAwait(false);
     }
 }

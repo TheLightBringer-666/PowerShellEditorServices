@@ -1,10 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Runspace
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Runspace;
+
+internal interface IRunspaceContext
 {
-    internal interface IRunspaceContext
-    {
-        IRunspaceInfo CurrentRunspace { get; }
-    }
+    IRunspaceInfo CurrentRunspace { get; }
 }

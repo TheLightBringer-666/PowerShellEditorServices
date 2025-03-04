@@ -10,270 +10,269 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Microsoft.PowerShell.EditorServices.Services.Extension
+namespace Microsoft.PowerShell.EditorServices.Services.Extension;
+
+internal class EditorOperationsService : IEditorOperations
 {
-    internal class EditorOperationsService : IEditorOperations
+    private readonly PsesInternalHost _psesHost;
+    private readonly WorkspaceService _workspaceService;
+    private readonly ILanguageServerFacade _languageServer;
+
+    public EditorOperationsService(
+        PsesInternalHost psesHost,
+        WorkspaceService workspaceService,
+        ILanguageServerFacade languageServer)
     {
-        private readonly PsesInternalHost _psesHost;
-        private readonly WorkspaceService _workspaceService;
-        private readonly ILanguageServerFacade _languageServer;
+        _psesHost = psesHost;
+        _workspaceService = workspaceService;
+        _languageServer = languageServer;
+    }
 
-        public EditorOperationsService(
-            PsesInternalHost psesHost,
-            WorkspaceService workspaceService,
-            ILanguageServerFacade languageServer)
+    public async Task<EditorContext> GetEditorContextAsync()
+    {
+        if (!TestHasLanguageServer())
         {
-            _psesHost = psesHost;
-            _workspaceService = workspaceService;
-            _languageServer = languageServer;
+            return null;
         }
 
-        public async Task<EditorContext> GetEditorContextAsync()
+        ClientEditorContext clientContext =
+            await _languageServer.SendRequest(
+                "editor/getEditorContext",
+                new GetEditorContextRequest())
+            .Returning<ClientEditorContext>(CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return ConvertClientEditorContext(clientContext);
+    }
+
+    public async Task InsertTextAsync(string filePath, string text, BufferRange insertRange)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return null;
-            }
-
-            ClientEditorContext clientContext =
-                await _languageServer.SendRequest(
-                    "editor/getEditorContext",
-                    new GetEditorContextRequest())
-                .Returning<ClientEditorContext>(CancellationToken.None)
-                .ConfigureAwait(false);
-
-            return ConvertClientEditorContext(clientContext);
+            return;
         }
 
-        public async Task InsertTextAsync(string filePath, string text, BufferRange insertRange)
+        await _languageServer.SendRequest("editor/insertText", new InsertTextRequest
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/insertText", new InsertTextRequest
-            {
-                FilePath = filePath,
-                InsertText = text,
-                InsertRange =
-                    new Range
+            FilePath = filePath,
+            InsertText = text,
+            InsertRange =
+                new Range
+                {
+                    Start = new Position
                     {
-                        Start = new Position
-                        {
-                            Line = insertRange.Start.Line - 1,
-                            Character = insertRange.Start.Column - 1
-                        },
-                        End = new Position
-                        {
-                            Line = insertRange.End.Line - 1,
-                            Character = insertRange.End.Column - 1
-                        }
-                    }
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
-        }
-
-        public async Task SetSelectionAsync(BufferRange selectionRange)
-        {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/setSelection", new SetSelectionRequest
-            {
-                SelectionRange =
-                    new Range
+                        Line = insertRange.Start.Line - 1,
+                        Character = insertRange.Start.Column - 1
+                    },
+                    End = new Position
                     {
-                        Start = new Position
-                        {
-                            Line = selectionRange.Start.Line - 1,
-                            Character = selectionRange.Start.Column - 1
-                        },
-                        End = new Position
-                        {
-                            Line = selectionRange.End.Line - 1,
-                            Character = selectionRange.End.Column - 1
-                        }
+                        Line = insertRange.End.Line - 1,
+                        Character = insertRange.End.Column - 1
                     }
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
-        }
+                }
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
 
-        public EditorContext ConvertClientEditorContext(
-            ClientEditorContext clientContext)
+    public async Task SetSelectionAsync(BufferRange selectionRange)
+    {
+        if (!TestHasLanguageServer())
         {
-            ScriptFile scriptFile = _workspaceService.GetFileBuffer(
-                clientContext.CurrentFilePath,
-                clientContext.CurrentFileContent);
-
-            return
-                new EditorContext(
-                    this,
-                    scriptFile,
-                    new BufferPosition(
-                        clientContext.CursorPosition.Line + 1,
-                        clientContext.CursorPosition.Character + 1),
-                    new BufferRange(
-                        clientContext.SelectionRange.Start.Line + 1,
-                        clientContext.SelectionRange.Start.Character + 1,
-                        clientContext.SelectionRange.End.Line + 1,
-                        clientContext.SelectionRange.End.Character + 1),
-                    clientContext.CurrentFileLanguage);
+            return;
         }
 
-        public async Task NewFileAsync() => await NewFileAsync(string.Empty).ConfigureAwait(false);
-
-        public async Task NewFileAsync(string content)
+        await _languageServer.SendRequest("editor/setSelection", new SetSelectionRequest
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
+            SelectionRange =
+                new Range
+                {
+                    Start = new Position
+                    {
+                        Line = selectionRange.Start.Line - 1,
+                        Character = selectionRange.Start.Column - 1
+                    },
+                    End = new Position
+                    {
+                        Line = selectionRange.End.Line - 1,
+                        Character = selectionRange.End.Column - 1
+                    }
+                }
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
 
-            await _languageServer.SendRequest("editor/newFile", content)
-                .Returning<EditorOperationResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
-        }
+    public EditorContext ConvertClientEditorContext(
+        ClientEditorContext clientContext)
+    {
+        ScriptFile scriptFile = _workspaceService.GetFileBuffer(
+            clientContext.CurrentFilePath,
+            clientContext.CurrentFileContent);
 
-        public async Task OpenFileAsync(string filePath)
+        return
+            new EditorContext(
+                this,
+                scriptFile,
+                new BufferPosition(
+                    clientContext.CursorPosition.Line + 1,
+                    clientContext.CursorPosition.Character + 1),
+                new BufferRange(
+                    clientContext.SelectionRange.Start.Line + 1,
+                    clientContext.SelectionRange.Start.Character + 1,
+                    clientContext.SelectionRange.End.Line + 1,
+                    clientContext.SelectionRange.End.Character + 1),
+                clientContext.CurrentFileLanguage);
+    }
+
+    public async Task NewFileAsync() => await NewFileAsync(string.Empty).ConfigureAwait(false);
+
+    public async Task NewFileAsync(string content)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/openFile", new OpenFileDetails
-            {
-                FilePath = filePath,
-                Preview = true
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+            return;
         }
 
-        public async Task OpenFileAsync(string filePath, bool preview)
+        await _languageServer.SendRequest("editor/newFile", content)
+            .Returning<EditorOperationResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    public async Task OpenFileAsync(string filePath)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/openFile", new OpenFileDetails
-            {
-                FilePath = filePath,
-                Preview = preview
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+            return;
         }
 
-        public async Task CloseFileAsync(string filePath)
+        await _languageServer.SendRequest("editor/openFile", new OpenFileDetails
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
+            FilePath = filePath,
+            Preview = true
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
 
-            await _languageServer.SendRequest("editor/closeFile", filePath)
-                .Returning<EditorOperationResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-
-        public Task SaveFileAsync(string filePath) => SaveFileAsync(filePath, null);
-
-        public async Task SaveFileAsync(string currentPath, string newSavePath)
+    public async Task OpenFileAsync(string filePath, bool preview)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/saveFile", new SaveFileDetails
-            {
-                FilePath = currentPath,
-                NewPath = newSavePath
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+            return;
         }
 
-        // NOTE: This name is now outdated since we don't have a way to distinguish one workspace
-        // from another for the extension API. TODO: Should this be an empty string if we have no
-        // workspaces?
-        public string GetWorkspacePath() => _workspaceService.InitialWorkingDirectory;
-
-        public string[] GetWorkspacePaths() => _workspaceService.WorkspacePaths.ToArray();
-
-        public string GetWorkspaceRelativePath(ScriptFile scriptFile) => _workspaceService.GetRelativePath(scriptFile);
-
-        public async Task ShowInformationMessageAsync(string message)
+        await _languageServer.SendRequest("editor/openFile", new OpenFileDetails
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
+            FilePath = filePath,
+            Preview = preview
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
 
-            await _languageServer.SendRequest("editor/showInformationMessage", message)
-                .Returning<EditorOperationResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-
-        public async Task ShowErrorMessageAsync(string message)
+    public async Task CloseFileAsync(string filePath)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/showErrorMessage", message)
-                .Returning<EditorOperationResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
+            return;
         }
 
-        public async Task ShowWarningMessageAsync(string message)
+        await _languageServer.SendRequest("editor/closeFile", filePath)
+            .Returning<EditorOperationResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    public Task SaveFileAsync(string filePath) => SaveFileAsync(filePath, null);
+
+    public async Task SaveFileAsync(string currentPath, string newSavePath)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
-
-            await _languageServer.SendRequest("editor/showWarningMessage", message)
-                .Returning<EditorOperationResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
+            return;
         }
 
-        public async Task SetStatusBarMessageAsync(string message, int? timeout)
+        await _languageServer.SendRequest("editor/saveFile", new SaveFileDetails
         {
-            if (!TestHasLanguageServer())
-            {
-                return;
-            }
+            FilePath = currentPath,
+            NewPath = newSavePath
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
 
-            await _languageServer.SendRequest("editor/setStatusBarMessage", new StatusBarMessageDetails
-            {
-                Message = message,
-                Timeout = timeout
-            }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
-        }
+    // NOTE: This name is now outdated since we don't have a way to distinguish one workspace
+    // from another for the extension API. TODO: Should this be an empty string if we have no
+    // workspaces?
+    public string GetWorkspacePath() => _workspaceService.InitialWorkingDirectory;
 
-        public void ClearTerminal()
+    public string[] GetWorkspacePaths() => _workspaceService.WorkspacePaths.ToArray();
+
+    public string GetWorkspaceRelativePath(ScriptFile scriptFile) => _workspaceService.GetRelativePath(scriptFile);
+
+    public async Task ShowInformationMessageAsync(string message)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (!TestHasLanguageServer(warnUser: false))
-            {
-                return;
-            }
-
-            _languageServer.SendNotification("editor/clearTerminal");
+            return;
         }
 
-        private bool TestHasLanguageServer(bool warnUser = true)
+        await _languageServer.SendRequest("editor/showInformationMessage", message)
+            .Returning<EditorOperationResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    public async Task ShowErrorMessageAsync(string message)
+    {
+        if (!TestHasLanguageServer())
         {
-            if (_languageServer != null)
-            {
-                return true;
-            }
-
-            if (warnUser)
-            {
-                _psesHost.UI.WriteWarningLine(
-                    "Editor operations are not supported in temporary consoles. Re-run the command in the main Extension Terminal.");
-            }
-
-            return false;
+            return;
         }
+
+        await _languageServer.SendRequest("editor/showErrorMessage", message)
+            .Returning<EditorOperationResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    public async Task ShowWarningMessageAsync(string message)
+    {
+        if (!TestHasLanguageServer())
+        {
+            return;
+        }
+
+        await _languageServer.SendRequest("editor/showWarningMessage", message)
+            .Returning<EditorOperationResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    public async Task SetStatusBarMessageAsync(string message, int? timeout)
+    {
+        if (!TestHasLanguageServer())
+        {
+            return;
+        }
+
+        await _languageServer.SendRequest("editor/setStatusBarMessage", new StatusBarMessageDetails
+        {
+            Message = message,
+            Timeout = timeout
+        }).Returning<EditorOperationResponse>(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    public void ClearTerminal()
+    {
+        if (!TestHasLanguageServer(warnUser: false))
+        {
+            return;
+        }
+
+        _languageServer.SendNotification("editor/clearTerminal");
+    }
+
+    private bool TestHasLanguageServer(bool warnUser = true)
+    {
+        if (_languageServer != null)
+        {
+            return true;
+        }
+
+        if (warnUser)
+        {
+            _psesHost.UI.WriteWarningLine(
+                "Editor operations are not supported in temporary consoles. Re-run the command in the main Extension Terminal.");
+        }
+
+        return false;
     }
 }

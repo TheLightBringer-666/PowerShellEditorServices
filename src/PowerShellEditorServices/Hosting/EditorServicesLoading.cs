@@ -1,17 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-namespace Microsoft.PowerShell.EditorServices.Hosting
+namespace Microsoft.PowerShell.EditorServices.Hosting;
+
+/// <summary>
+/// Implementation-free class designed to safely allow PowerShell Editor Services to be loaded in an obvious way.
+/// Referencing this class will force looking for and loading the PSES assembly if it's not already loaded.
+/// </summary>
+internal static class EditorServicesLoading
 {
-    /// <summary>
-    /// Implementation-free class designed to safely allow PowerShell Editor Services to be loaded in an obvious way.
-    /// Referencing this class will force looking for and loading the PSES assembly if it's not already loaded.
-    /// </summary>
-    internal static class EditorServicesLoading
+    internal static void LoadEditorServicesForHost()
     {
-        internal static void LoadEditorServicesForHost()
-        {
-            // No-op that forces loading this assembly
-        }
+        // No-op that forces loading this assembly
     }
 }

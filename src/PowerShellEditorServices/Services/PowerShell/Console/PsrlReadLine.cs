@@ -6,46 +6,45 @@ using Microsoft.PowerShell.EditorServices.Services.PowerShell.Host;
 using System.Management.Automation;
 using System.Threading;
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Console
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Console;
+
+using System;
+
+internal class PsrlReadLine : TerminalReadLine
 {
-    using System;
+    private readonly PSReadLineProxy _psrlProxy;
 
-    internal class PsrlReadLine : TerminalReadLine
+    private readonly PsesInternalHost _psesHost;
+
+    private readonly EngineIntrinsics _engineIntrinsics;
+
+    public PsrlReadLine(
+        PSReadLineProxy psrlProxy,
+        PsesInternalHost psesHost,
+        EngineIntrinsics engineIntrinsics,
+        Func<bool, ConsoleKeyInfo> readKeyFunc,
+        Action<CancellationToken> onIdleAction)
     {
-        private readonly PSReadLineProxy _psrlProxy;
+        _psrlProxy = psrlProxy;
+        _psesHost = psesHost;
+        _engineIntrinsics = engineIntrinsics;
+        _psrlProxy.OverrideReadKey(readKeyFunc);
+        _psrlProxy.OverrideIdleHandler(onIdleAction);
+    }
 
-        private readonly PsesInternalHost _psesHost;
+    public override string ReadLine(CancellationToken cancellationToken) => _psesHost.InvokeDelegate(
+        representation: "ReadLine",
+        new ExecutionOptions { RequiresForeground = true },
+        InvokePSReadLine,
+        cancellationToken);
 
-        private readonly EngineIntrinsics _engineIntrinsics;
+    public override void AddToHistory(string historyEntry) => _psrlProxy.AddToHistory(historyEntry);
 
-        public PsrlReadLine(
-            PSReadLineProxy psrlProxy,
-            PsesInternalHost psesHost,
-            EngineIntrinsics engineIntrinsics,
-            Func<bool, ConsoleKeyInfo> readKeyFunc,
-            Action<CancellationToken> onIdleAction)
-        {
-            _psrlProxy = psrlProxy;
-            _psesHost = psesHost;
-            _engineIntrinsics = engineIntrinsics;
-            _psrlProxy.OverrideReadKey(readKeyFunc);
-            _psrlProxy.OverrideIdleHandler(onIdleAction);
-        }
+    protected override ConsoleKeyInfo ReadKey(CancellationToken cancellationToken) => _psesHost.ReadKey(intercept: true, cancellationToken);
 
-        public override string ReadLine(CancellationToken cancellationToken) => _psesHost.InvokeDelegate(
-            representation: "ReadLine",
-            new ExecutionOptions { RequiresForeground = true },
-            InvokePSReadLine,
-            cancellationToken);
-
-        public override void AddToHistory(string historyEntry) => _psrlProxy.AddToHistory(historyEntry);
-
-        protected override ConsoleKeyInfo ReadKey(CancellationToken cancellationToken) => _psesHost.ReadKey(intercept: true, cancellationToken);
-
-        private string InvokePSReadLine(CancellationToken cancellationToken)
-        {
-            EngineIntrinsics engineIntrinsics = _psesHost.IsRunspacePushed ? null : _engineIntrinsics;
-            return _psrlProxy.ReadLine(_psesHost.Runspace, engineIntrinsics, cancellationToken, /* lastExecutionStatus */ null);
-        }
+    private string InvokePSReadLine(CancellationToken cancellationToken)
+    {
+        EngineIntrinsics engineIntrinsics = _psesHost.IsRunspacePushed ? null : _engineIntrinsics;
+        return _psrlProxy.ReadLine(_psesHost.Runspace, engineIntrinsics, cancellationToken, /* lastExecutionStatus */ null);
     }
 }

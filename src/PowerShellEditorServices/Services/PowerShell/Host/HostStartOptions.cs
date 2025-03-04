@@ -1,14 +1,13 @@
 ﻿// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host
+namespace Microsoft.PowerShell.EditorServices.Services.PowerShell.Host;
+
+internal struct HostStartOptions
 {
-    internal struct HostStartOptions
-    {
-        public bool LoadProfiles { get; set; }
+    public bool LoadProfiles { get; set; }
 
-        public string InitialWorkingDirectory { get; set; }
+    public string InitialWorkingDirectory { get; set; }
 
-        public string ShellIntegrationScript { get; set; }
-}
+    public string ShellIntegrationScript { get; set; }
 }

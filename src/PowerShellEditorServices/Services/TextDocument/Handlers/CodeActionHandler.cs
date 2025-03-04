@@ -15,134 +15,133 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 using OmniSharp.Extensions.LanguageServer.Protocol.Serialization;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
-{
-    internal class PsesCodeActionHandler : CodeActionHandlerBase
-    {
-        private static readonly CommandOrCodeActionContainer s_emptyCommandOrCodeActionContainer = new();
-        private readonly ILogger _logger;
-        private readonly AnalysisService _analysisService;
+namespace Microsoft.PowerShell.EditorServices.Handlers;
 
-        public PsesCodeActionHandler(ILoggerFactory factory, AnalysisService analysisService)
+internal class PsesCodeActionHandler : CodeActionHandlerBase
+{
+    private static readonly CommandOrCodeActionContainer s_emptyCommandOrCodeActionContainer = new();
+    private readonly ILogger _logger;
+    private readonly AnalysisService _analysisService;
+
+    public PsesCodeActionHandler(ILoggerFactory factory, AnalysisService analysisService)
+    {
+        _logger = factory.CreateLogger<PsesCodeActionHandler>();
+        _analysisService = analysisService;
+    }
+
+    protected override CodeActionRegistrationOptions CreateRegistrationOptions(CodeActionCapability capability, ClientCapabilities clientCapabilities) => new()
+    {
+        // TODO: What do we do with the arguments?
+        DocumentSelector = LspUtils.PowerShellDocumentSelector,
+        CodeActionKinds = new CodeActionKind[] { CodeActionKind.QuickFix }
+    };
+
+    public override Task<CodeAction> Handle(CodeAction request, CancellationToken cancellationToken) => Task.FromResult(request);
+
+    public override async Task<CommandOrCodeActionContainer> Handle(CodeActionParams request, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
         {
-            _logger = factory.CreateLogger<PsesCodeActionHandler>();
-            _analysisService = analysisService;
+            _logger.LogDebug($"CodeAction request canceled at range: {request.Range}");
+            return s_emptyCommandOrCodeActionContainer;
         }
 
-        protected override CodeActionRegistrationOptions CreateRegistrationOptions(CodeActionCapability capability, ClientCapabilities clientCapabilities) => new()
+        IReadOnlyDictionary<string, IEnumerable<MarkerCorrection>> corrections = await _analysisService.GetMostRecentCodeActionsForFileAsync(
+            request.TextDocument.Uri)
+            .ConfigureAwait(false);
+
+        // GetMostRecentCodeActionsForFileAsync actually returns null if there's no corrections.
+        if (corrections is null)
         {
-            // TODO: What do we do with the arguments?
-            DocumentSelector = LspUtils.PowerShellDocumentSelector,
-            CodeActionKinds = new CodeActionKind[] { CodeActionKind.QuickFix }
-        };
+            return s_emptyCommandOrCodeActionContainer;
+        }
 
-        public override Task<CodeAction> Handle(CodeAction request, CancellationToken cancellationToken) => Task.FromResult(request);
+        List<CommandOrCodeAction> codeActions = new();
 
-        public override async Task<CommandOrCodeActionContainer> Handle(CodeActionParams request, CancellationToken cancellationToken)
+        // If there are any code fixes, send these commands first so they appear at top of "Code Fix" menu in the client UI.
+        foreach (Diagnostic diagnostic in request.Context.Diagnostics)
         {
             if (cancellationToken.IsCancellationRequested)
             {
-                _logger.LogDebug($"CodeAction request canceled at range: {request.Range}");
-                return s_emptyCommandOrCodeActionContainer;
+                break;
             }
 
-            IReadOnlyDictionary<string, IEnumerable<MarkerCorrection>> corrections = await _analysisService.GetMostRecentCodeActionsForFileAsync(
-                request.TextDocument.Uri)
-                .ConfigureAwait(false);
-
-            // GetMostRecentCodeActionsForFileAsync actually returns null if there's no corrections.
-            if (corrections is null)
+            if (string.IsNullOrEmpty(diagnostic.Code?.String))
             {
-                return s_emptyCommandOrCodeActionContainer;
+                _logger.LogWarning(
+                    $"textDocument/codeAction skipping diagnostic with empty Code field: {diagnostic.Source} {diagnostic.Message}");
+
+                continue;
             }
 
-            List<CommandOrCodeAction> codeActions = new();
-
-            // If there are any code fixes, send these commands first so they appear at top of "Code Fix" menu in the client UI.
-            foreach (Diagnostic diagnostic in request.Context.Diagnostics)
+            string diagnosticId = AnalysisService.GetUniqueIdFromDiagnostic(diagnostic);
+            if (corrections.TryGetValue(diagnosticId, out IEnumerable<MarkerCorrection> markerCorrections))
             {
-                if (cancellationToken.IsCancellationRequested)
+                foreach (MarkerCorrection markerCorrection in markerCorrections)
                 {
-                    break;
-                }
-
-                if (string.IsNullOrEmpty(diagnostic.Code?.String))
-                {
-                    _logger.LogWarning(
-                        $"textDocument/codeAction skipping diagnostic with empty Code field: {diagnostic.Source} {diagnostic.Message}");
-
-                    continue;
-                }
-
-                string diagnosticId = AnalysisService.GetUniqueIdFromDiagnostic(diagnostic);
-                if (corrections.TryGetValue(diagnosticId, out IEnumerable<MarkerCorrection> markerCorrections))
-                {
-                    foreach (MarkerCorrection markerCorrection in markerCorrections)
-                    {
-                        codeActions.Add(new CodeAction
-                        {
-                            Title = markerCorrection.Name,
-                            Kind = CodeActionKind.QuickFix,
-                            Edit = new WorkspaceEdit
-                            {
-                                DocumentChanges = new Container<WorkspaceEditDocumentChange>(
-                                    new WorkspaceEditDocumentChange(
-                                        new TextDocumentEdit
-                                        {
-                                            TextDocument = new OptionalVersionedTextDocumentIdentifier
-                                            {
-                                                Uri = request.TextDocument.Uri
-                                            },
-                                            Edits = new TextEditContainer(markerCorrection.Edit.ToTextEdit())
-                                        }))
-                            }
-                        });
-                    }
-                }
-            }
-
-            // Add "show documentation" commands last so they appear at the bottom of the client UI.
-            // These commands do not require code fixes. Sometimes we get a batch of diagnostics
-            // to create commands for. No need to create multiple show doc commands for the same rule.
-            HashSet<string> ruleNamesProcessed = new();
-            foreach (Diagnostic diagnostic in request.Context.Diagnostics)
-            {
-                if (!diagnostic.Code.HasValue ||
-                    !diagnostic.Code.Value.IsString ||
-                    string.IsNullOrEmpty(diagnostic.Code?.String))
-                {
-                    continue;
-                }
-
-                if (string.Equals(diagnostic.Source, "PSScriptAnalyzer", StringComparison.OrdinalIgnoreCase) &&
-                    !ruleNamesProcessed.Contains(diagnostic.Code?.String))
-                {
-                    _ = ruleNamesProcessed.Add(diagnostic.Code?.String);
-                    string title = $"Show documentation for: {diagnostic.Code?.String}";
                     codeActions.Add(new CodeAction
                     {
-                        Title = title,
-                        // This doesn't fix anything, but I'm adding it here so that it shows up in VS Code's
-                        // Quick fix UI. The VS Code team is working on a way to support documentation CodeAction's better
-                        // but this is good for now until that's ready.
+                        Title = markerCorrection.Name,
                         Kind = CodeActionKind.QuickFix,
-                        Command = new Command
+                        Edit = new WorkspaceEdit
                         {
-                            Title = title,
-                            Name = "PowerShell.ShowCodeActionDocumentation",
-                            Arguments = JArray.FromObject(new object[]
-                            {
-                                diagnostic.Code?.String
-                            },
-                            LspSerializer.Instance.JsonSerializer)
+                            DocumentChanges = new Container<WorkspaceEditDocumentChange>(
+                                new WorkspaceEditDocumentChange(
+                                    new TextDocumentEdit
+                                    {
+                                        TextDocument = new OptionalVersionedTextDocumentIdentifier
+                                        {
+                                            Uri = request.TextDocument.Uri
+                                        },
+                                        Edits = new TextEditContainer(markerCorrection.Edit.ToTextEdit())
+                                    }))
                         }
                     });
                 }
             }
-
-            return codeActions.Count == 0
-                ? s_emptyCommandOrCodeActionContainer
-                : codeActions;
         }
+
+        // Add "show documentation" commands last so they appear at the bottom of the client UI.
+        // These commands do not require code fixes. Sometimes we get a batch of diagnostics
+        // to create commands for. No need to create multiple show doc commands for the same rule.
+        HashSet<string> ruleNamesProcessed = new();
+        foreach (Diagnostic diagnostic in request.Context.Diagnostics)
+        {
+            if (!diagnostic.Code.HasValue ||
+                !diagnostic.Code.Value.IsString ||
+                string.IsNullOrEmpty(diagnostic.Code?.String))
+            {
+                continue;
+            }
+
+            if (string.Equals(diagnostic.Source, "PSScriptAnalyzer", StringComparison.OrdinalIgnoreCase) &&
+                !ruleNamesProcessed.Contains(diagnostic.Code?.String))
+            {
+                _ = ruleNamesProcessed.Add(diagnostic.Code?.String);
+                string title = $"Show documentation for: {diagnostic.Code?.String}";
+                codeActions.Add(new CodeAction
+                {
+                    Title = title,
+                    // This doesn't fix anything, but I'm adding it here so that it shows up in VS Code's
+                    // Quick fix UI. The VS Code team is working on a way to support documentation CodeAction's better
+                    // but this is good for now until that's ready.
+                    Kind = CodeActionKind.QuickFix,
+                    Command = new Command
+                    {
+                        Title = title,
+                        Name = "PowerShell.ShowCodeActionDocumentation",
+                        Arguments = JArray.FromObject(new object[]
+                        {
+                            diagnostic.Code?.String
+                        },
+                        LspSerializer.Instance.JsonSerializer)
+                    }
+                });
+            }
+        }
+
+        return codeActions.Count == 0
+            ? s_emptyCommandOrCodeActionContainer
+            : codeActions;
     }
 }

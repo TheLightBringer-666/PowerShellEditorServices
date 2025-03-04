@@ -7,145 +7,144 @@ using System.Reactive.Subjects;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
-namespace PowerShellEditorServices.Test.E2E
+namespace PowerShellEditorServices.Test.E2E;
+
+/// <summary>
+///     A <see cref="ServerProcess"/> is responsible for launching or attaching to a language server, providing access to its input and output streams, and tracking its lifetime.
+/// </summary>
+public abstract class ServerProcess : IDisposable
 {
+    private readonly ISubject<System.Reactive.Unit> _exitedSubject;
+
+    private readonly Lazy<Stream> _inStreamLazy;
+
+    private readonly Lazy<Stream> _outStreamLazy;
+
     /// <summary>
-    ///     A <see cref="ServerProcess"/> is responsible for launching or attaching to a language server, providing access to its input and output streams, and tracking its lifetime.
+    ///     Create a new <see cref="ServerProcess"/>.
     /// </summary>
-    public abstract class ServerProcess : IDisposable
+    /// <param name="loggerFactory">
+    ///     The factory for loggers used by the process and its components.
+    /// </param>
+    protected ServerProcess(ILoggerFactory loggerFactory)
     {
-        private readonly ISubject<System.Reactive.Unit> _exitedSubject;
+        LoggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        Log = LoggerFactory.CreateLogger(categoryName: GetType().FullName);
 
-        private readonly Lazy<Stream> _inStreamLazy;
+        ServerStartCompletion = new TaskCompletionSource<object>();
 
-        private readonly Lazy<Stream> _outStreamLazy;
+        ServerExitCompletion = new TaskCompletionSource<object>();
+        ServerExitCompletion.SetResult(null); // Start out as if the server has already exited.
 
-        /// <summary>
-        ///     Create a new <see cref="ServerProcess"/>.
-        /// </summary>
-        /// <param name="loggerFactory">
-        ///     The factory for loggers used by the process and its components.
-        /// </param>
-        protected ServerProcess(ILoggerFactory loggerFactory)
-        {
-            LoggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
-            Log = LoggerFactory.CreateLogger(categoryName: GetType().FullName);
+        Exited = _exitedSubject = new AsyncSubject<System.Reactive.Unit>();
 
-            ServerStartCompletion = new TaskCompletionSource<object>();
+        _inStreamLazy = new Lazy<Stream>(GetInputStream);
+        _outStreamLazy = new Lazy<Stream>(GetOutputStream);
+    }
 
-            ServerExitCompletion = new TaskCompletionSource<object>();
-            ServerExitCompletion.SetResult(null); // Start out as if the server has already exited.
+    /// <summary>
+    ///     Finalizer for <see cref="ServerProcess"/>.
+    /// </summary>
+    ~ServerProcess()
+    {
+        Dispose(false);
+    }
 
-            Exited = _exitedSubject = new AsyncSubject<System.Reactive.Unit>();
+    /// <summary>
+    ///     Dispose of resources being used by the launcher.
+    /// </summary>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
 
-            _inStreamLazy = new Lazy<Stream>(GetInputStream);
-            _outStreamLazy = new Lazy<Stream>(GetOutputStream);
-        }
+    /// <summary>
+    ///     Dispose of resources being used by the launcher.
+    /// </summary>
+    /// <param name="disposing">
+    ///     Explicit disposal?
+    /// </param>
+    protected virtual void Dispose(bool disposing)
+    {
+    }
 
-        /// <summary>
-        ///     Finalizer for <see cref="ServerProcess"/>.
-        /// </summary>
-        ~ServerProcess()
-        {
-            Dispose(false);
-        }
+    /// <summary>
+    ///     The factory for loggers used by the process and its components.
+    /// </summary>
+    protected ILoggerFactory LoggerFactory { get; }
 
-        /// <summary>
-        ///     Dispose of resources being used by the launcher.
-        /// </summary>
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
+    /// <summary>
+    ///     The process's logger.
+    /// </summary>
+    protected ILogger Log { get; }
 
-        /// <summary>
-        ///     Dispose of resources being used by the launcher.
-        /// </summary>
-        /// <param name="disposing">
-        ///     Explicit disposal?
-        /// </param>
-        protected virtual void Dispose(bool disposing)
-        {
-        }
+    /// <summary>
+    ///     The <see cref="TaskCompletionSource{TResult}"/> used to signal server startup.
+    /// </summary>
+    protected TaskCompletionSource<object> ServerStartCompletion { get; set; }
 
-        /// <summary>
-        ///     The factory for loggers used by the process and its components.
-        /// </summary>
-        protected ILoggerFactory LoggerFactory { get; }
+    /// <summary>
+    ///     The <see cref="TaskCompletionSource{TResult}"/> used to signal server exit.
+    /// </summary>
+    protected TaskCompletionSource<object> ServerExitCompletion { get; set; }
 
-        /// <summary>
-        ///     The process's logger.
-        /// </summary>
-        protected ILogger Log { get; }
+    /// <summary>
+    ///     Event raised when the server has exited.
+    /// </summary>
+    public IObservable<System.Reactive.Unit> Exited { get; }
 
-        /// <summary>
-        ///     The <see cref="TaskCompletionSource{TResult}"/> used to signal server startup.
-        /// </summary>
-        protected TaskCompletionSource<object> ServerStartCompletion { get; set; }
+    /// <summary>
+    ///     Is the server running?
+    /// </summary>
+    public abstract bool IsRunning { get; }
 
-        /// <summary>
-        ///     The <see cref="TaskCompletionSource{TResult}"/> used to signal server exit.
-        /// </summary>
-        protected TaskCompletionSource<object> ServerExitCompletion { get; set; }
+    /// <summary>
+    ///     A <see cref="Task"/> that completes when the server has started.
+    /// </summary>
+    public Task HasStarted => ServerStartCompletion.Task;
 
-        /// <summary>
-        ///     Event raised when the server has exited.
-        /// </summary>
-        public IObservable<System.Reactive.Unit> Exited { get; }
+    /// <summary>
+    ///     A <see cref="Task"/> that completes when the server has exited.
+    /// </summary>
+    public Task HasExited => ServerExitCompletion.Task;
 
-        /// <summary>
-        ///     Is the server running?
-        /// </summary>
-        public abstract bool IsRunning { get; }
+    protected abstract Stream GetInputStream();
 
-        /// <summary>
-        ///     A <see cref="Task"/> that completes when the server has started.
-        /// </summary>
-        public Task HasStarted => ServerStartCompletion.Task;
+    protected abstract Stream GetOutputStream();
 
-        /// <summary>
-        ///     A <see cref="Task"/> that completes when the server has exited.
-        /// </summary>
-        public Task HasExited => ServerExitCompletion.Task;
+    /// <summary>
+    ///     The server's input stream.
+    /// </summary>
+    /// <remarks>
+    ///     The connection will write to the server's input stream, and read from its output stream.
+    /// </remarks>
+    public Stream InputStream => _inStreamLazy.Value;
 
-        protected abstract Stream GetInputStream();
+    /// <summary>
+    ///     The server's output stream.
+    /// </summary>
+    /// <remarks>
+    ///     The connection will read from the server's output stream, and write to its input stream.
+    /// </remarks>
+    public Stream OutputStream => _outStreamLazy.Value;
 
-        protected abstract Stream GetOutputStream();
+    /// <summary>
+    ///     Start or connect to the server.
+    /// </summary>
+    public abstract Task Start();
 
-        /// <summary>
-        ///     The server's input stream.
-        /// </summary>
-        /// <remarks>
-        ///     The connection will write to the server's input stream, and read from its output stream.
-        /// </remarks>
-        public Stream InputStream => _inStreamLazy.Value;
+    /// <summary>
+    ///     Stop or disconnect from the server.
+    /// </summary>
+    public abstract Task Stop();
 
-        /// <summary>
-        ///     The server's output stream.
-        /// </summary>
-        /// <remarks>
-        ///     The connection will read from the server's output stream, and write to its input stream.
-        /// </remarks>
-        public Stream OutputStream => _outStreamLazy.Value;
-
-        /// <summary>
-        ///     Start or connect to the server.
-        /// </summary>
-        public abstract Task Start();
-
-        /// <summary>
-        ///     Stop or disconnect from the server.
-        /// </summary>
-        public abstract Task Stop();
-
-        /// <summary>
-        ///     Raise the <see cref="Exited"/> event.
-        /// </summary>
-        protected virtual void OnExited()
-        {
-            _exitedSubject.OnNext(System.Reactive.Unit.Default);
-            _exitedSubject.OnCompleted();
-        }
+    /// <summary>
+    ///     Raise the <see cref="Exited"/> event.
+    /// </summary>
+    protected virtual void OnExited()
+    {
+        _exitedSubject.OnNext(System.Reactive.Unit.Default);
+        _exitedSubject.OnCompleted();
     }
 }

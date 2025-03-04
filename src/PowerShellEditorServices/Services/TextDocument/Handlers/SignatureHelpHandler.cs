@@ -13,84 +13,83 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Client.Capabilities;
 using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
+namespace Microsoft.PowerShell.EditorServices.Handlers;
+
+internal class PsesSignatureHelpHandler : SignatureHelpHandlerBase
 {
-    internal class PsesSignatureHelpHandler : SignatureHelpHandlerBase
+    private readonly ILogger _logger;
+    private readonly SymbolsService _symbolsService;
+    private readonly WorkspaceService _workspaceService;
+
+    public PsesSignatureHelpHandler(
+        ILoggerFactory factory,
+        SymbolsService symbolsService,
+        WorkspaceService workspaceService)
     {
-        private readonly ILogger _logger;
-        private readonly SymbolsService _symbolsService;
-        private readonly WorkspaceService _workspaceService;
+        _logger = factory.CreateLogger<PsesHoverHandler>();
+        _symbolsService = symbolsService;
+        _workspaceService = workspaceService;
+    }
 
-        public PsesSignatureHelpHandler(
-            ILoggerFactory factory,
-            SymbolsService symbolsService,
-            WorkspaceService workspaceService)
+    protected override SignatureHelpRegistrationOptions CreateRegistrationOptions(SignatureHelpCapability capability, ClientCapabilities clientCapabilities) => new()
+    {
+        DocumentSelector = LspUtils.PowerShellDocumentSelector,
+        // TODO: We should evaluate what triggers (and re-triggers) signature help (like dash?)
+        TriggerCharacters = new Container<string>(" ")
+    };
+
+    public override async Task<SignatureHelp> Handle(SignatureHelpParams request, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
         {
-            _logger = factory.CreateLogger<PsesHoverHandler>();
-            _symbolsService = symbolsService;
-            _workspaceService = workspaceService;
+            _logger.LogDebug("SignatureHelp request canceled for file: {Uri}", request.TextDocument.Uri);
+            return new SignatureHelp();
         }
 
-        protected override SignatureHelpRegistrationOptions CreateRegistrationOptions(SignatureHelpCapability capability, ClientCapabilities clientCapabilities) => new()
+        ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
+
+        ParameterSetSignatures parameterSets =
+            await _symbolsService.FindParameterSetsInFileAsync(
+                scriptFile,
+                request.Position.Line + 1,
+                request.Position.Character + 1).ConfigureAwait(false);
+
+        if (parameterSets is null)
         {
-            DocumentSelector = LspUtils.PowerShellDocumentSelector,
-            // TODO: We should evaluate what triggers (and re-triggers) signature help (like dash?)
-            TriggerCharacters = new Container<string>(" ")
+            return new SignatureHelp();
+        }
+
+        SignatureInformation[] signatures = new SignatureInformation[parameterSets.Signatures.Length];
+        for (int i = 0; i < signatures.Length; i++)
+        {
+            List<ParameterInformation> parameters = new();
+            foreach (ParameterInfo param in parameterSets.Signatures[i].Parameters)
+            {
+                parameters.Add(CreateParameterInfo(param));
+            }
+
+            signatures[i] = new SignatureInformation
+            {
+                Label = parameterSets.CommandName + " " + parameterSets.Signatures[i].SignatureText,
+                Documentation = null,
+                Parameters = parameters,
+            };
+        }
+
+        return new SignatureHelp
+        {
+            Signatures = signatures,
+            ActiveParameter = null,
+            ActiveSignature = 0
         };
+    }
 
-        public override async Task<SignatureHelp> Handle(SignatureHelpParams request, CancellationToken cancellationToken)
+    private static ParameterInformation CreateParameterInfo(ParameterInfo parameterInfo)
+    {
+        return new ParameterInformation
         {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogDebug("SignatureHelp request canceled for file: {Uri}", request.TextDocument.Uri);
-                return new SignatureHelp();
-            }
-
-            ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
-
-            ParameterSetSignatures parameterSets =
-                await _symbolsService.FindParameterSetsInFileAsync(
-                    scriptFile,
-                    request.Position.Line + 1,
-                    request.Position.Character + 1).ConfigureAwait(false);
-
-            if (parameterSets is null)
-            {
-                return new SignatureHelp();
-            }
-
-            SignatureInformation[] signatures = new SignatureInformation[parameterSets.Signatures.Length];
-            for (int i = 0; i < signatures.Length; i++)
-            {
-                List<ParameterInformation> parameters = new();
-                foreach (ParameterInfo param in parameterSets.Signatures[i].Parameters)
-                {
-                    parameters.Add(CreateParameterInfo(param));
-                }
-
-                signatures[i] = new SignatureInformation
-                {
-                    Label = parameterSets.CommandName + " " + parameterSets.Signatures[i].SignatureText,
-                    Documentation = null,
-                    Parameters = parameters,
-                };
-            }
-
-            return new SignatureHelp
-            {
-                Signatures = signatures,
-                ActiveParameter = null,
-                ActiveSignature = 0
-            };
-        }
-
-        private static ParameterInformation CreateParameterInfo(ParameterInfo parameterInfo)
-        {
-            return new ParameterInformation
-            {
-                Label = parameterInfo.Name,
-                Documentation = parameterInfo.HelpMessage
-            };
-        }
+            Label = parameterInfo.Name,
+            Documentation = parameterInfo.HelpMessage
+        };
     }
 }

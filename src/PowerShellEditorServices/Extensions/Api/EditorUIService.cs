@@ -9,195 +9,194 @@ using System.Threading.Tasks;
 using Microsoft.PowerShell.EditorServices.Services.Extension;
 using OmniSharp.Extensions.LanguageServer.Protocol.Server;
 
-namespace Microsoft.PowerShell.EditorServices.Extensions.Services
+namespace Microsoft.PowerShell.EditorServices.Extensions.Services;
+
+/// <summary>
+/// Object specifying a UI prompt option to display to the user.
+/// </summary>
+public sealed class PromptChoiceDetails
 {
     /// <summary>
-    /// Object specifying a UI prompt option to display to the user.
+    /// Construct a prompt choice object for display in a prompt to the user.
     /// </summary>
-    public sealed class PromptChoiceDetails
+    /// <param name="label">The label to identify this prompt choice. May not contain commas (',').</param>
+    /// <param name="helpMessage">The message to display to users.</param>
+    public PromptChoiceDetails(string label, string helpMessage)
     {
-        /// <summary>
-        /// Construct a prompt choice object for display in a prompt to the user.
-        /// </summary>
-        /// <param name="label">The label to identify this prompt choice. May not contain commas (',').</param>
-        /// <param name="helpMessage">The message to display to users.</param>
-        public PromptChoiceDetails(string label, string helpMessage)
+        if (label == null)
         {
-            if (label == null)
-            {
-                throw new ArgumentNullException(nameof(label));
-            }
-
-            // Currently VSCode sends back selected labels as a single string concatenated with ','
-            // When this is fixed, we'll be able to allow commas in labels
-            if (label.Contains(","))
-            {
-                throw new ArgumentException($"Labels may not contain ','. Label: '{label}'", nameof(label));
-            }
-
-            Label = label;
-            HelpMessage = helpMessage;
+            throw new ArgumentNullException(nameof(label));
         }
 
-        /// <summary>
-        /// The label to identify this prompt message.
-        /// </summary>
-        public string Label { get; }
+        // Currently VSCode sends back selected labels as a single string concatenated with ','
+        // When this is fixed, we'll be able to allow commas in labels
+        if (label.Contains(","))
+        {
+            throw new ArgumentException($"Labels may not contain ','. Label: '{label}'", nameof(label));
+        }
 
-        /// <summary>
-        /// The message to display to users in the UI for this prompt choice.
-        /// </summary>
-        public string HelpMessage { get; }
+        Label = label;
+        HelpMessage = helpMessage;
     }
 
     /// <summary>
-    /// A service to manipulate the editor user interface.
+    /// The label to identify this prompt message.
     /// </summary>
-    public interface IEditorUIService
+    public string Label { get; }
+
+    /// <summary>
+    /// The message to display to users in the UI for this prompt choice.
+    /// </summary>
+    public string HelpMessage { get; }
+}
+
+/// <summary>
+/// A service to manipulate the editor user interface.
+/// </summary>
+public interface IEditorUIService
+{
+    /// <summary>
+    /// Prompt input after displaying the given message.
+    /// </summary>
+    /// <param name="message">The message to display with the prompt.</param>
+    /// <returns>The input entered by the user, or null if the prompt was canceled.</returns>
+    Task<string> PromptInputAsync(string message);
+
+    /// <summary>
+    /// Prompt a single selection from a set of choices.
+    /// </summary>
+    /// <param name="message">The message to display for the prompt.</param>
+    /// <param name="choices">The choices to give the user.</param>
+    /// <returns>The label of the selected choice, or null if the prompt was canceled.</returns>
+    Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices);
+
+    /// <summary>
+    /// Prompt a single selection from a set of choices.
+    /// </summary>
+    /// <param name="message">The message to display for the prompt.</param>
+    /// <param name="choices">The choices to give the user.</param>
+    /// <param name="defaultChoiceIndex">The index in the choice list of the default choice.</param>
+    /// <returns>The label of the selected choice, or null if the prompt was canceled.</returns>
+    Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, int defaultChoiceIndex);
+
+    /// <summary>
+    /// Prompt a set of selections from a list of choices.
+    /// </summary>
+    /// <param name="message">The message to display for the prompt.</param>
+    /// <param name="choices">The choices to give the user.</param>
+    /// <returns>A list of the labels of selected choices, or null if the prompt was canceled.</returns>
+    Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices);
+
+    /// <summary>
+    /// Prompt a set of selections from a list of choices.
+    /// </summary>
+    /// <param name="message">The message to display for the prompt.</param>
+    /// <param name="choices">The choices to give the user.</param>
+    /// <param name="defaultChoiceIndexes">A list of the indexes of choices to mark as default.</param>
+    /// <returns>A list of the labels of selected choices, or null if the prompt was canceled.</returns>
+    Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, IReadOnlyList<int> defaultChoiceIndexes);
+}
+
+internal class EditorUIService : IEditorUIService
+{
+    private static readonly string[] s_choiceResponseLabelSeparators = new[] { ", " };
+
+    private readonly ILanguageServerFacade _languageServer;
+
+    public EditorUIService(ILanguageServerFacade languageServer) => _languageServer = languageServer;
+
+    public async Task<string> PromptInputAsync(string message)
     {
-        /// <summary>
-        /// Prompt input after displaying the given message.
-        /// </summary>
-        /// <param name="message">The message to display with the prompt.</param>
-        /// <returns>The input entered by the user, or null if the prompt was canceled.</returns>
-        Task<string> PromptInputAsync(string message);
+        // The VSCode client currently doesn't use the Label field, so we ignore it
+        ShowInputPromptResponse response = await _languageServer.SendRequest(
+            "powerShell/showInputPrompt",
+            new ShowInputPromptRequest
+            {
+                Name = message,
+            })
+            .Returning<ShowInputPromptResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
 
-        /// <summary>
-        /// Prompt a single selection from a set of choices.
-        /// </summary>
-        /// <param name="message">The message to display for the prompt.</param>
-        /// <param name="choices">The choices to give the user.</param>
-        /// <returns>The label of the selected choice, or null if the prompt was canceled.</returns>
-        Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices);
+        if (response.PromptCancelled)
+        {
+            return null;
+        }
 
-        /// <summary>
-        /// Prompt a single selection from a set of choices.
-        /// </summary>
-        /// <param name="message">The message to display for the prompt.</param>
-        /// <param name="choices">The choices to give the user.</param>
-        /// <param name="defaultChoiceIndex">The index in the choice list of the default choice.</param>
-        /// <returns>The label of the selected choice, or null if the prompt was canceled.</returns>
-        Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, int defaultChoiceIndex);
-
-        /// <summary>
-        /// Prompt a set of selections from a list of choices.
-        /// </summary>
-        /// <param name="message">The message to display for the prompt.</param>
-        /// <param name="choices">The choices to give the user.</param>
-        /// <returns>A list of the labels of selected choices, or null if the prompt was canceled.</returns>
-        Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices);
-
-        /// <summary>
-        /// Prompt a set of selections from a list of choices.
-        /// </summary>
-        /// <param name="message">The message to display for the prompt.</param>
-        /// <param name="choices">The choices to give the user.</param>
-        /// <param name="defaultChoiceIndexes">A list of the indexes of choices to mark as default.</param>
-        /// <returns>A list of the labels of selected choices, or null if the prompt was canceled.</returns>
-        Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, IReadOnlyList<int> defaultChoiceIndexes);
+        return response.ResponseText;
     }
 
-    internal class EditorUIService : IEditorUIService
+    public Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices) =>
+        PromptMultipleSelectionAsync(message, choices, defaultChoiceIndexes: null);
+
+    public async Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, IReadOnlyList<int> defaultChoiceIndexes)
     {
-        private static readonly string[] s_choiceResponseLabelSeparators = new[] { ", " };
+        ChoiceDetails[] choiceDetails = GetChoiceDetails(choices);
 
-        private readonly ILanguageServerFacade _languageServer;
-
-        public EditorUIService(ILanguageServerFacade languageServer) => _languageServer = languageServer;
-
-        public async Task<string> PromptInputAsync(string message)
-        {
-            // The VSCode client currently doesn't use the Label field, so we ignore it
-            ShowInputPromptResponse response = await _languageServer.SendRequest(
-                "powerShell/showInputPrompt",
-                new ShowInputPromptRequest
-                {
-                    Name = message,
-                })
-                .Returning<ShowInputPromptResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
-
-            if (response.PromptCancelled)
+        ShowChoicePromptResponse response = await _languageServer.SendRequest(
+            "powerShell/showChoicePrompt",
+            new ShowChoicePromptRequest
             {
-                return null;
-            }
+                IsMultiChoice = true,
+                Caption = string.Empty,
+                Message = message,
+                Choices = choiceDetails,
+                DefaultChoices = defaultChoiceIndexes?.ToArray(),
+            })
+            .Returning<ShowChoicePromptResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
 
-            return response.ResponseText;
+        if (response.PromptCancelled)
+        {
+            return null;
         }
 
-        public Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices) =>
-            PromptMultipleSelectionAsync(message, choices, defaultChoiceIndexes: null);
+        return response.ResponseText.Split(s_choiceResponseLabelSeparators, StringSplitOptions.None);
+    }
 
-        public async Task<IReadOnlyList<string>> PromptMultipleSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, IReadOnlyList<int> defaultChoiceIndexes)
-        {
-            ChoiceDetails[] choiceDetails = GetChoiceDetails(choices);
+    public Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices) =>
+        PromptSelectionAsync(message, choices, defaultChoiceIndex: -1);
 
-            ShowChoicePromptResponse response = await _languageServer.SendRequest(
-                "powerShell/showChoicePrompt",
-                new ShowChoicePromptRequest
-                {
-                    IsMultiChoice = true,
-                    Caption = string.Empty,
-                    Message = message,
-                    Choices = choiceDetails,
-                    DefaultChoices = defaultChoiceIndexes?.ToArray(),
-                })
-                .Returning<ShowChoicePromptResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
+    public async Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, int defaultChoiceIndex)
+    {
+        ChoiceDetails[] choiceDetails = GetChoiceDetails(choices);
 
-            if (response.PromptCancelled)
+        ShowChoicePromptResponse response = await _languageServer.SendRequest(
+            "powerShell/showChoicePrompt",
+            new ShowChoicePromptRequest
             {
-                return null;
-            }
+                IsMultiChoice = false,
+                Caption = string.Empty,
+                Message = message,
+                Choices = choiceDetails,
+                DefaultChoices = defaultChoiceIndex > -1 ? new[] { defaultChoiceIndex } : Array.Empty<int>(),
+            })
+            .Returning<ShowChoicePromptResponse>(CancellationToken.None)
+            .ConfigureAwait(false);
 
-            return response.ResponseText.Split(s_choiceResponseLabelSeparators, StringSplitOptions.None);
+        if (response.PromptCancelled)
+        {
+            return null;
         }
 
-        public Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices) =>
-            PromptSelectionAsync(message, choices, defaultChoiceIndex: -1);
+        return response.ResponseText;
+    }
 
-        public async Task<string> PromptSelectionAsync(string message, IReadOnlyList<PromptChoiceDetails> choices, int defaultChoiceIndex)
+    private static ChoiceDetails[] GetChoiceDetails(IReadOnlyList<PromptChoiceDetails> promptChoiceDetails)
+    {
+        ChoiceDetails[] choices = new ChoiceDetails[promptChoiceDetails.Count];
+        for (int i = 0; i < promptChoiceDetails.Count; i++)
         {
-            ChoiceDetails[] choiceDetails = GetChoiceDetails(choices);
-
-            ShowChoicePromptResponse response = await _languageServer.SendRequest(
-                "powerShell/showChoicePrompt",
-                new ShowChoicePromptRequest
-                {
-                    IsMultiChoice = false,
-                    Caption = string.Empty,
-                    Message = message,
-                    Choices = choiceDetails,
-                    DefaultChoices = defaultChoiceIndex > -1 ? new[] { defaultChoiceIndex } : Array.Empty<int>(),
-                })
-                .Returning<ShowChoicePromptResponse>(CancellationToken.None)
-                .ConfigureAwait(false);
-
-            if (response.PromptCancelled)
+            choices[i] = new ChoiceDetails
             {
-                return null;
-            }
-
-            return response.ResponseText;
+                Label = promptChoiceDetails[i].Label,
+                HelpMessage = promptChoiceDetails[i].HelpMessage,
+                // There were intended to enable hotkey use for choice selections,
+                // but currently VSCode does not do anything with them.
+                // They can be exposed once VSCode supports them.
+                HotKeyIndex = -1,
+                HotKeyCharacter = null,
+            };
         }
-
-        private static ChoiceDetails[] GetChoiceDetails(IReadOnlyList<PromptChoiceDetails> promptChoiceDetails)
-        {
-            ChoiceDetails[] choices = new ChoiceDetails[promptChoiceDetails.Count];
-            for (int i = 0; i < promptChoiceDetails.Count; i++)
-            {
-                choices[i] = new ChoiceDetails
-                {
-                    Label = promptChoiceDetails[i].Label,
-                    HelpMessage = promptChoiceDetails[i].HelpMessage,
-                    // There were intended to enable hotkey use for choice selections,
-                    // but currently VSCode does not do anything with them.
-                    // They can be exposed once VSCode supports them.
-                    HotKeyIndex = -1,
-                    HotKeyCharacter = null,
-                };
-            }
-            return choices;
-        }
+        return choices;
     }
 }

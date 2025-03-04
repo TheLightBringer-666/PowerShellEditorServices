@@ -13,53 +13,52 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Client.Capabilities;
 using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
-namespace Microsoft.PowerShell.EditorServices.Handlers
+namespace Microsoft.PowerShell.EditorServices.Handlers;
+
+internal class PsesDocumentHighlightHandler : DocumentHighlightHandlerBase
 {
-    internal class PsesDocumentHighlightHandler : DocumentHighlightHandlerBase
+    private static readonly DocumentHighlightContainer s_emptyHighlightContainer = new();
+    private readonly ILogger _logger;
+    private readonly WorkspaceService _workspaceService;
+
+    public PsesDocumentHighlightHandler(
+        ILoggerFactory loggerFactory,
+        WorkspaceService workspaceService)
     {
-        private static readonly DocumentHighlightContainer s_emptyHighlightContainer = new();
-        private readonly ILogger _logger;
-        private readonly WorkspaceService _workspaceService;
+        _logger = loggerFactory.CreateLogger<PsesDocumentHighlightHandler>();
+        _workspaceService = workspaceService;
+    }
 
-        public PsesDocumentHighlightHandler(
-            ILoggerFactory loggerFactory,
-            WorkspaceService workspaceService)
+    protected override DocumentHighlightRegistrationOptions CreateRegistrationOptions(DocumentHighlightCapability capability, ClientCapabilities clientCapabilities) => new()
+    {
+        DocumentSelector = LspUtils.PowerShellDocumentSelector
+    };
+
+    public override Task<DocumentHighlightContainer> Handle(
+        DocumentHighlightParams request,
+        CancellationToken cancellationToken)
+    {
+        ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
+
+        IEnumerable<SymbolReference> occurrences = SymbolsService.FindOccurrencesInFile(
+            scriptFile,
+            request.Position.Line + 1,
+            request.Position.Character + 1);
+
+        List<DocumentHighlight> highlights = new();
+        foreach (SymbolReference occurrence in occurrences)
         {
-            _logger = loggerFactory.CreateLogger<PsesDocumentHighlightHandler>();
-            _workspaceService = workspaceService;
-        }
-
-        protected override DocumentHighlightRegistrationOptions CreateRegistrationOptions(DocumentHighlightCapability capability, ClientCapabilities clientCapabilities) => new()
-        {
-            DocumentSelector = LspUtils.PowerShellDocumentSelector
-        };
-
-        public override Task<DocumentHighlightContainer> Handle(
-            DocumentHighlightParams request,
-            CancellationToken cancellationToken)
-        {
-            ScriptFile scriptFile = _workspaceService.GetFile(request.TextDocument.Uri);
-
-            IEnumerable<SymbolReference> occurrences = SymbolsService.FindOccurrencesInFile(
-                scriptFile,
-                request.Position.Line + 1,
-                request.Position.Character + 1);
-
-            List<DocumentHighlight> highlights = new();
-            foreach (SymbolReference occurrence in occurrences)
+            highlights.Add(new DocumentHighlight
             {
-                highlights.Add(new DocumentHighlight
-                {
-                    Kind = DocumentHighlightKind.Write, // TODO: Which symbol types are writable?
-                    Range = occurrence.NameRegion.ToRange() // Just the symbol name
-                });
-            }
-
-            _logger.LogDebug("Highlights: " + highlights);
-
-            return cancellationToken.IsCancellationRequested || highlights.Count == 0
-                ? Task.FromResult(s_emptyHighlightContainer)
-                : Task.FromResult(new DocumentHighlightContainer(highlights));
+                Kind = DocumentHighlightKind.Write, // TODO: Which symbol types are writable?
+                Range = occurrence.NameRegion.ToRange() // Just the symbol name
+            });
         }
+
+        _logger.LogDebug("Highlights: " + highlights);
+
+        return cancellationToken.IsCancellationRequested || highlights.Count == 0
+            ? Task.FromResult(s_emptyHighlightContainer)
+            : Task.FromResult(new DocumentHighlightContainer(highlights));
     }
 }

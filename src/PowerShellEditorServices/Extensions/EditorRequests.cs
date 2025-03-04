@@ -3,71 +3,70 @@
 
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 
-namespace Microsoft.PowerShell.EditorServices.Extensions
+namespace Microsoft.PowerShell.EditorServices.Extensions;
+
+internal class ExtensionCommandAddedNotification
 {
-    internal class ExtensionCommandAddedNotification
-    {
-        public string Name { get; set; }
+    public string Name { get; set; }
 
-        public string DisplayName { get; set; }
-    }
+    public string DisplayName { get; set; }
+}
 
-    internal class ExtensionCommandUpdatedNotification
-    {
-        public string Name { get; set; }
-    }
+internal class ExtensionCommandUpdatedNotification
+{
+    public string Name { get; set; }
+}
 
-    internal class ExtensionCommandRemovedNotification
-    {
-        public string Name { get; set; }
-    }
+internal class ExtensionCommandRemovedNotification
+{
+    public string Name { get; set; }
+}
 
-    internal class GetEditorContextRequest
-    { }
+internal class GetEditorContextRequest
+{ }
 
-    internal enum EditorOperationResponse
-    {
-        Completed,
-        Failed
-    }
+internal enum EditorOperationResponse
+{
+    Completed,
+    Failed
+}
 
-    internal class InsertTextRequest
-    {
-        public string FilePath { get; set; }
+internal class InsertTextRequest
+{
+    public string FilePath { get; set; }
 
-        public string InsertText { get; set; }
+    public string InsertText { get; set; }
 
-        public Range InsertRange { get; set; }
-    }
+    public Range InsertRange { get; set; }
+}
 
-    internal class SetSelectionRequest
-    {
-        public Range SelectionRange { get; set; }
-    }
+internal class SetSelectionRequest
+{
+    public Range SelectionRange { get; set; }
+}
 
-    internal class SetCursorPositionRequest
-    {
-        public Position CursorPosition { get; set; }
-    }
+internal class SetCursorPositionRequest
+{
+    public Position CursorPosition { get; set; }
+}
 
-    internal class OpenFileDetails
-    {
-        public string FilePath { get; set; }
+internal class OpenFileDetails
+{
+    public string FilePath { get; set; }
 
-        public bool Preview { get; set; }
-    }
+    public bool Preview { get; set; }
+}
 
-    internal class SaveFileDetails
-    {
-        public string FilePath { get; set; }
+internal class SaveFileDetails
+{
+    public string FilePath { get; set; }
 
-        public string NewPath { get; set; }
-    }
+    public string NewPath { get; set; }
+}
 
-    internal class StatusBarMessageDetails
-    {
-        public string Message { get; set; }
+internal class StatusBarMessageDetails
+{
+    public string Message { get; set; }
 
-        public int? Timeout { get; set; }
-    }
+    public int? Timeout { get; set; }
 }

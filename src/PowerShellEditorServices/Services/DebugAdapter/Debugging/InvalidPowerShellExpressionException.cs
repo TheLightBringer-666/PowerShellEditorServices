@@ -3,21 +3,20 @@
 
 using System;
 
-namespace Microsoft.PowerShell.EditorServices.Services.DebugAdapter
+namespace Microsoft.PowerShell.EditorServices.Services.DebugAdapter;
+
+/// <summary>
+/// Represents the exception that is thrown when an invalid expression is provided to the DebugService's SetVariable method.
+/// </summary>
+public class InvalidPowerShellExpressionException : Exception
 {
     /// <summary>
-    /// Represents the exception that is thrown when an invalid expression is provided to the DebugService's SetVariable method.
+    /// Initializes a new instance of the SetVariableExpressionException class.
     /// </summary>
-    public class InvalidPowerShellExpressionException : Exception
-    {
-        /// <summary>
-        /// Initializes a new instance of the SetVariableExpressionException class.
-        /// </summary>
-        /// <param name="message">Message indicating why the expression is invalid.</param>
-        public InvalidPowerShellExpressionException(string message) : base(message) { }
+    /// <param name="message">Message indicating why the expression is invalid.</param>
+    public InvalidPowerShellExpressionException(string message) : base(message) { }
 
-        public InvalidPowerShellExpressionException() { }
+    public InvalidPowerShellExpressionException() { }
 
-        public InvalidPowerShellExpressionException(string message, Exception innerException) : base(message, innerException) { }
-    }
+    public InvalidPowerShellExpressionException(string message, Exception innerException) : base(message, innerException) { }
 }

@@ -7,476 +7,475 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 using System;
 using System.Management.Automation.Language;
 
-namespace Microsoft.PowerShell.EditorServices.Extensions
+namespace Microsoft.PowerShell.EditorServices.Extensions;
+
+public class FileScriptPosition : IScriptPosition, IFilePosition
 {
-    public class FileScriptPosition : IScriptPosition, IFilePosition
-    {
-        public static FileScriptPosition Empty { get; } = new FileScriptPosition(null, 0, 0, 0);
+    public static FileScriptPosition Empty { get; } = new FileScriptPosition(null, 0, 0, 0);
 
-        public static FileScriptPosition FromPosition(FileContext file, int lineNumber, int columnNumber)
+    public static FileScriptPosition FromPosition(FileContext file, int lineNumber, int columnNumber)
+    {
+        if (file is null)
         {
-            if (file is null)
+            throw new ArgumentNullException(nameof(file));
+        }
+
+        int offset = 0;
+        int currLine = 1;
+        string fileText = file.Ast.Extent.Text;
+        while (offset < fileText.Length && currLine < lineNumber)
+        {
+            offset = fileText.IndexOf('\n', offset) + 1;
+            if (offset is 0)
             {
-                throw new ArgumentNullException(nameof(file));
+                // Line and column passed were not valid and the offset can not be determined.
+                return new FileScriptPosition(file, lineNumber, columnNumber, offset);
             }
 
-            int offset = 0;
-            int currLine = 1;
-            string fileText = file.Ast.Extent.Text;
-            while (offset < fileText.Length && currLine < lineNumber)
+            currLine++;
+        }
+
+        offset += columnNumber - 1;
+
+        return new FileScriptPosition(file, lineNumber, columnNumber, offset);
+    }
+
+    public static FileScriptPosition FromOffset(FileContext file, int offset)
+    {
+        if (file is null)
+        {
+            throw new ArgumentNullException(nameof(file));
+        }
+
+        int line = 1;
+        string fileText = file.Ast.Extent.Text;
+
+        if (offset >= fileText.Length)
+        {
+            throw new ArgumentException("Offset greater than file length", nameof(offset));
+        }
+
+        int lastLineOffset = -1;
+        for (int i = 0; i < offset; i++)
+        {
+            if (fileText[i] == '\n')
             {
-                offset = fileText.IndexOf('\n', offset) + 1;
-                if (offset is 0)
-                {
-                    // Line and column passed were not valid and the offset can not be determined.
-                    return new FileScriptPosition(file, lineNumber, columnNumber, offset);
-                }
-
-                currLine++;
+                lastLineOffset = i;
+                line++;
             }
-
-            offset += columnNumber - 1;
-
-            return new FileScriptPosition(file, lineNumber, columnNumber, offset);
         }
 
-        public static FileScriptPosition FromOffset(FileContext file, int offset)
-        {
-            if (file is null)
-            {
-                throw new ArgumentNullException(nameof(file));
-            }
+        int column = offset - lastLineOffset;
 
-            int line = 1;
-            string fileText = file.Ast.Extent.Text;
-
-            if (offset >= fileText.Length)
-            {
-                throw new ArgumentException("Offset greater than file length", nameof(offset));
-            }
-
-            int lastLineOffset = -1;
-            for (int i = 0; i < offset; i++)
-            {
-                if (fileText[i] == '\n')
-                {
-                    lastLineOffset = i;
-                    line++;
-                }
-            }
-
-            int column = offset - lastLineOffset;
-
-            return new FileScriptPosition(file, line, column, offset);
-        }
-
-        private readonly FileContext _file;
-
-        internal FileScriptPosition(FileContext file, int lineNumber, int columnNumber, int offset)
-        {
-            _file = file;
-            Line = file?.GetTextLines()?[lineNumber - 1] ?? string.Empty;
-            ColumnNumber = columnNumber;
-            LineNumber = lineNumber;
-            Offset = offset;
-        }
-
-        public int ColumnNumber { get; }
-
-        public string File { get; }
-
-        public string Line { get; }
-
-        public int LineNumber { get; }
-
-        public int Offset { get; }
-
-        int IFilePosition.Column => ColumnNumber;
-
-        int IFilePosition.Line => LineNumber;
-
-        public string GetFullScript() => _file?.GetText() ?? string.Empty;
+        return new FileScriptPosition(file, line, column, offset);
     }
 
-    public class FileScriptExtent : IScriptExtent, IFileRange
+    private readonly FileContext _file;
+
+    internal FileScriptPosition(FileContext file, int lineNumber, int columnNumber, int offset)
     {
-        public static bool IsEmpty(FileScriptExtent extent)
-        {
-            return extent == Empty
-                || (extent.StartOffset == 0 && extent.EndOffset == 0);
-        }
-
-        public static FileScriptExtent Empty { get; } = new FileScriptExtent(null, FileScriptPosition.Empty, FileScriptPosition.Empty);
-
-        public static FileScriptExtent FromOffsets(FileContext file, int startOffset, int endOffset)
-        {
-            if (file is null)
-            {
-                throw new ArgumentNullException(nameof(file));
-            }
-
-            return new FileScriptExtent(
-                file,
-                FileScriptPosition.FromOffset(file, startOffset),
-                FileScriptPosition.FromOffset(file, endOffset));
-        }
-
-        public static FileScriptExtent FromPositions(FileContext file, int startLine, int startColumn, int endLine, int endColumn)
-        {
-            if (file is null)
-            {
-                throw new ArgumentNullException(nameof(file));
-            }
-
-            return new FileScriptExtent(
-                file,
-                FileScriptPosition.FromPosition(file, startLine, startColumn),
-                FileScriptPosition.FromPosition(file, endLine, endColumn));
-        }
-
-        private readonly FileContext _file;
-        private readonly FileScriptPosition _start;
-        private readonly FileScriptPosition _end;
-
-        public FileScriptExtent(FileContext file, FileScriptPosition start, FileScriptPosition end)
-        {
-            _file = file;
-            _start = start;
-            _end = end;
-        }
-
-        public int EndColumnNumber => _end.ColumnNumber;
-
-        public int EndLineNumber => _end.LineNumber;
-
-        public int EndOffset => _end.Offset;
-
-        public IScriptPosition EndScriptPosition => _end;
-
-        public string File => _file?.Path ?? string.Empty;
-
-        public int StartColumnNumber => _start.ColumnNumber;
-
-        public int StartLineNumber => _start.LineNumber;
-
-        public int StartOffset => _start.Offset;
-
-        public IScriptPosition StartScriptPosition => _start;
-
-        public string Text => _file?.GetText()?.Substring(_start.Offset, _end.Offset - _start.Offset) ?? string.Empty;
-
-        IFilePosition IFileRange.Start => _start;
-
-        IFilePosition IFileRange.End => _end;
+        _file = file;
+        Line = file?.GetTextLines()?[lineNumber - 1] ?? string.Empty;
+        ColumnNumber = columnNumber;
+        LineNumber = lineNumber;
+        Offset = offset;
     }
+
+    public int ColumnNumber { get; }
+
+    public string File { get; }
+
+    public string Line { get; }
+
+    public int LineNumber { get; }
+
+    public int Offset { get; }
+
+    int IFilePosition.Column => ColumnNumber;
+
+    int IFilePosition.Line => LineNumber;
+
+    public string GetFullScript() => _file?.GetText() ?? string.Empty;
+}
+
+public class FileScriptExtent : IScriptExtent, IFileRange
+{
+    public static bool IsEmpty(FileScriptExtent extent)
+    {
+        return extent == Empty
+            || (extent.StartOffset == 0 && extent.EndOffset == 0);
+    }
+
+    public static FileScriptExtent Empty { get; } = new FileScriptExtent(null, FileScriptPosition.Empty, FileScriptPosition.Empty);
+
+    public static FileScriptExtent FromOffsets(FileContext file, int startOffset, int endOffset)
+    {
+        if (file is null)
+        {
+            throw new ArgumentNullException(nameof(file));
+        }
+
+        return new FileScriptExtent(
+            file,
+            FileScriptPosition.FromOffset(file, startOffset),
+            FileScriptPosition.FromOffset(file, endOffset));
+    }
+
+    public static FileScriptExtent FromPositions(FileContext file, int startLine, int startColumn, int endLine, int endColumn)
+    {
+        if (file is null)
+        {
+            throw new ArgumentNullException(nameof(file));
+        }
+
+        return new FileScriptExtent(
+            file,
+            FileScriptPosition.FromPosition(file, startLine, startColumn),
+            FileScriptPosition.FromPosition(file, endLine, endColumn));
+    }
+
+    private readonly FileContext _file;
+    private readonly FileScriptPosition _start;
+    private readonly FileScriptPosition _end;
+
+    public FileScriptExtent(FileContext file, FileScriptPosition start, FileScriptPosition end)
+    {
+        _file = file;
+        _start = start;
+        _end = end;
+    }
+
+    public int EndColumnNumber => _end.ColumnNumber;
+
+    public int EndLineNumber => _end.LineNumber;
+
+    public int EndOffset => _end.Offset;
+
+    public IScriptPosition EndScriptPosition => _end;
+
+    public string File => _file?.Path ?? string.Empty;
+
+    public int StartColumnNumber => _start.ColumnNumber;
+
+    public int StartLineNumber => _start.LineNumber;
+
+    public int StartOffset => _start.Offset;
+
+    public IScriptPosition StartScriptPosition => _start;
+
+    public string Text => _file?.GetText()?.Substring(_start.Offset, _end.Offset - _start.Offset) ?? string.Empty;
+
+    IFilePosition IFileRange.Start => _start;
+
+    IFilePosition IFileRange.End => _end;
+}
+
+/// <summary>
+/// A 1-based file position, referring to a point in a file.
+/// </summary>
+public interface IFilePosition
+{
+    /// <summary>
+    /// The line number of the file position.
+    /// </summary>
+    int Line { get; }
 
     /// <summary>
-    /// A 1-based file position, referring to a point in a file.
+    /// The column number of the file position.
     /// </summary>
-    public interface IFilePosition
-    {
-        /// <summary>
-        /// The line number of the file position.
-        /// </summary>
-        int Line { get; }
+    int Column { get; }
+}
 
-        /// <summary>
-        /// The column number of the file position.
-        /// </summary>
-        int Column { get; }
-    }
+/// <summary>
+/// A 1-based file range, referring to a range within a file.
+/// </summary>
+public interface IFileRange
+{
+    /// <summary>
+    /// The start position of the range.
+    /// </summary>
+    IFilePosition Start { get; }
 
     /// <summary>
-    /// A 1-based file range, referring to a range within a file.
+    /// The end position of the range.
     /// </summary>
-    public interface IFileRange
-    {
-        /// <summary>
-        /// The start position of the range.
-        /// </summary>
-        IFilePosition Start { get; }
+    IFilePosition End { get; }
+}
 
-        /// <summary>
-        /// The end position of the range.
-        /// </summary>
-        IFilePosition End { get; }
-    }
+/// <summary>
+/// A snapshot of a file, including the URI of the file
+/// and its textual contents when accessed.
+/// </summary>
+public interface IFileContext
+{
+    /// <summary>
+    /// The URI of the file.
+    /// </summary>
+    Uri Uri { get; }
 
     /// <summary>
-    /// A snapshot of a file, including the URI of the file
-    /// and its textual contents when accessed.
+    /// The content of the file when it was accessed.
     /// </summary>
-    public interface IFileContext
-    {
-        /// <summary>
-        /// The URI of the file.
-        /// </summary>
-        Uri Uri { get; }
+    string Content { get; }
+}
 
-        /// <summary>
-        /// The content of the file when it was accessed.
-        /// </summary>
-        string Content { get; }
-    }
+/// <summary>
+/// 0-based position within a file, conformant with the Language Server Protocol.
+/// </summary>
+public interface ILspFilePosition
+{
+    /// <summary>
+    /// The line index of the position within the file.
+    /// </summary>
+    int Line { get; }
 
     /// <summary>
-    /// 0-based position within a file, conformant with the Language Server Protocol.
+    /// The character offset from the line of the position.
     /// </summary>
-    public interface ILspFilePosition
-    {
-        /// <summary>
-        /// The line index of the position within the file.
-        /// </summary>
-        int Line { get; }
+    int Character { get; }
+}
 
-        /// <summary>
-        /// The character offset from the line of the position.
-        /// </summary>
-        int Character { get; }
-    }
+/// <summary>
+/// 0-based range within a file, conformant with the Language Server Protocol.
+/// </summary>
+public interface ILspFileRange
+{
+    /// <summary>
+    /// The start position of the range.
+    /// </summary>
+    ILspFilePosition Start { get; }
 
     /// <summary>
-    /// 0-based range within a file, conformant with the Language Server Protocol.
+    /// The end position of the range.
     /// </summary>
-    public interface ILspFileRange
-    {
-        /// <summary>
-        /// The start position of the range.
-        /// </summary>
-        ILspFilePosition Start { get; }
+    ILspFilePosition End { get; }
+}
 
-        /// <summary>
-        /// The end position of the range.
-        /// </summary>
-        ILspFilePosition End { get; }
-    }
+/// <summary>
+/// Snapshot of a file in focus in the editor.
+/// </summary>
+public interface ILspCurrentFileContext : IFileContext
+{
+    /// <summary>
+    /// The language the editor associates with this file.
+    /// </summary>
+    string Language { get; }
 
     /// <summary>
-    /// Snapshot of a file in focus in the editor.
+    /// The position of the cursor within the file when it was accessed.
+    /// If the cursor is not in the file, values may be negative.
     /// </summary>
-    public interface ILspCurrentFileContext : IFileContext
-    {
-        /// <summary>
-        /// The language the editor associates with this file.
-        /// </summary>
-        string Language { get; }
-
-        /// <summary>
-        /// The position of the cursor within the file when it was accessed.
-        /// If the cursor is not in the file, values may be negative.
-        /// </summary>
-        ILspFilePosition CursorPosition { get; }
-
-        /// <summary>
-        /// The currently selected range when the file was accessed.
-        /// If no selection is made, values may be negative.
-        /// </summary>
-        ILspFileRange SelectionRange { get; }
-    }
-
-    internal readonly struct OmnisharpLspPosition : ILspFilePosition, IEquatable<OmnisharpLspPosition>
-    {
-        private readonly Position _position;
-
-        public OmnisharpLspPosition(Position position) => _position = position;
-
-        public int Line => _position.Line;
-
-        public int Character => _position.Character;
-
-        public bool Equals(OmnisharpLspPosition other) => _position == other._position;
-    }
-
-    internal readonly struct OmnisharpLspRange : ILspFileRange, IEquatable<OmnisharpLspRange>
-    {
-        private readonly Range _range;
-
-        public OmnisharpLspRange(Range range) => _range = range;
-
-        public ILspFilePosition Start => new OmnisharpLspPosition(_range.Start);
-
-        public ILspFilePosition End => new OmnisharpLspPosition(_range.End);
-
-        public bool Equals(OmnisharpLspRange other) => _range == other._range;
-    }
-
-    internal readonly struct BufferFilePosition : IFilePosition, IEquatable<BufferFilePosition>
-    {
-        private readonly BufferPosition _position;
-
-        public BufferFilePosition(BufferPosition position) => _position = position;
-
-        public int Line => _position.Line;
-
-        public int Column => _position.Column;
-
-        public bool Equals(BufferFilePosition other)
-        {
-            return _position == other._position
-                || _position.Equals(other._position);
-        }
-    }
-
-    internal readonly struct BufferFileRange : IFileRange, IEquatable<BufferFileRange>
-    {
-        private readonly BufferRange _range;
-
-        public BufferFileRange(BufferRange range) => _range = range;
-
-        public IFilePosition Start => new BufferFilePosition(_range.Start);
-
-        public IFilePosition End => new BufferFilePosition(_range.End);
-
-        public bool Equals(BufferFileRange other)
-        {
-            return _range == other._range
-                || _range.Equals(other._range);
-        }
-    }
+    ILspFilePosition CursorPosition { get; }
 
     /// <summary>
-    /// A 1-based file position.
+    /// The currently selected range when the file was accessed.
+    /// If no selection is made, values may be negative.
     /// </summary>
-    public class FilePosition : IFilePosition
+    ILspFileRange SelectionRange { get; }
+}
+
+internal readonly struct OmnisharpLspPosition : ILspFilePosition, IEquatable<OmnisharpLspPosition>
+{
+    private readonly Position _position;
+
+    public OmnisharpLspPosition(Position position) => _position = position;
+
+    public int Line => _position.Line;
+
+    public int Character => _position.Character;
+
+    public bool Equals(OmnisharpLspPosition other) => _position == other._position;
+}
+
+internal readonly struct OmnisharpLspRange : ILspFileRange, IEquatable<OmnisharpLspRange>
+{
+    private readonly Range _range;
+
+    public OmnisharpLspRange(Range range) => _range = range;
+
+    public ILspFilePosition Start => new OmnisharpLspPosition(_range.Start);
+
+    public ILspFilePosition End => new OmnisharpLspPosition(_range.End);
+
+    public bool Equals(OmnisharpLspRange other) => _range == other._range;
+}
+
+internal readonly struct BufferFilePosition : IFilePosition, IEquatable<BufferFilePosition>
+{
+    private readonly BufferPosition _position;
+
+    public BufferFilePosition(BufferPosition position) => _position = position;
+
+    public int Line => _position.Line;
+
+    public int Column => _position.Column;
+
+    public bool Equals(BufferFilePosition other)
     {
-        public FilePosition(int line, int column)
-        {
-            Line = line;
-            Column = column;
-        }
-
-        public int Line { get; }
-
-        public int Column { get; }
+        return _position == other._position
+            || _position.Equals(other._position);
     }
+}
+
+internal readonly struct BufferFileRange : IFileRange, IEquatable<BufferFileRange>
+{
+    private readonly BufferRange _range;
+
+    public BufferFileRange(BufferRange range) => _range = range;
+
+    public IFilePosition Start => new BufferFilePosition(_range.Start);
+
+    public IFilePosition End => new BufferFilePosition(_range.End);
+
+    public bool Equals(BufferFileRange other)
+    {
+        return _range == other._range
+            || _range.Equals(other._range);
+    }
+}
+
+/// <summary>
+/// A 1-based file position.
+/// </summary>
+public class FilePosition : IFilePosition
+{
+    public FilePosition(int line, int column)
+    {
+        Line = line;
+        Column = column;
+    }
+
+    public int Line { get; }
+
+    public int Column { get; }
+}
+
+/// <summary>
+/// A 0-based file position.
+/// </summary>
+public class LspFilePosition : ILspFilePosition
+{
+    public LspFilePosition(int line, int column)
+    {
+        Line = line;
+        Character = column;
+    }
+
+    public int Line { get; }
+
+    public int Character { get; }
+}
+
+/// <summary>
+/// A 1-based file range.
+/// </summary>
+public class FileRange : IFileRange
+{
+    public FileRange(IFilePosition start, IFilePosition end)
+        : this(start, end, file: null)
+    {
+    }
+
+    public FileRange(IFilePosition start, IFilePosition end, string file)
+    {
+        Start = start;
+        End = end;
+        File = file;
+    }
+
+    public IFilePosition Start { get; }
+
+    public IFilePosition End { get; }
+
+    public string File { get; }
+}
+
+/// <summary>
+/// A 0-based file range.
+/// </summary>
+public class LspFileRange : ILspFileRange
+{
+    public LspFileRange(ILspFilePosition start, ILspFilePosition end)
+    {
+        Start = start;
+        End = end;
+    }
+
+    public ILspFilePosition Start { get; }
+
+    public ILspFilePosition End { get; }
+}
+
+internal class LspCurrentFileContext : ILspCurrentFileContext
+{
+    private readonly ClientEditorContext _editorContext;
+
+    public LspCurrentFileContext(ClientEditorContext editorContext)
+    {
+        _editorContext = editorContext;
+        Uri = new Uri(editorContext.CurrentFilePath);
+    }
+
+    public string Language => _editorContext.CurrentFileLanguage;
+
+    public ILspFilePosition CursorPosition => new OmnisharpLspPosition(_editorContext.CursorPosition);
+
+    public ILspFileRange SelectionRange => new OmnisharpLspRange(_editorContext.SelectionRange);
+
+    public Uri Uri { get; }
+
+    public string Content => _editorContext.CurrentFileContent;
+}
+
+/// <summary>
+/// Extension methods to conveniently convert between file position and range types.
+/// </summary>
+public static class FileObjectExtensionMethods
+{
+    /// <summary>
+    /// Convert a 1-based file position to a 0-based file position.
+    /// </summary>
+    /// <param name="position">The 1-based file position to convert.</param>
+    /// <returns>An equivalent 0-based file position.</returns>
+    public static ILspFilePosition ToLspPosition(this IFilePosition position) => new LspFilePosition(position.Line - 1, position.Column - 1);
 
     /// <summary>
-    /// A 0-based file position.
+    /// Convert a 1-based file range to a 0-based file range.
     /// </summary>
-    public class LspFilePosition : ILspFilePosition
-    {
-        public LspFilePosition(int line, int column)
-        {
-            Line = line;
-            Character = column;
-        }
-
-        public int Line { get; }
-
-        public int Character { get; }
-    }
+    /// <param name="range">The 1-based file range to convert.</param>
+    /// <returns>An equivalent 0-based file range.</returns>
+    public static ILspFileRange ToLspRange(this IFileRange range) => new LspFileRange(range.Start.ToLspPosition(), range.End.ToLspPosition());
 
     /// <summary>
-    /// A 1-based file range.
+    /// Convert a 0-based file position to a 1-based file position.
     /// </summary>
-    public class FileRange : IFileRange
-    {
-        public FileRange(IFilePosition start, IFilePosition end)
-            : this(start, end, file: null)
-        {
-        }
-
-        public FileRange(IFilePosition start, IFilePosition end, string file)
-        {
-            Start = start;
-            End = end;
-            File = file;
-        }
-
-        public IFilePosition Start { get; }
-
-        public IFilePosition End { get; }
-
-        public string File { get; }
-    }
+    /// <param name="position">The 0-based file position to convert.</param>
+    /// <returns>An equivalent 1-based file position.</returns>
+    public static IFilePosition ToFilePosition(this ILspFilePosition position) => new FilePosition(position.Line + 1, position.Character + 1);
 
     /// <summary>
-    /// A 0-based file range.
+    /// Convert a 0-based file range to a 1-based file range.
     /// </summary>
-    public class LspFileRange : ILspFileRange
+    /// <param name="range">The 0-based file range to convert.</param>
+    /// <returns>An equivalent 1-based file range.</returns>
+    public static IFileRange ToFileRange(this ILspFileRange range) => new FileRange(range.Start.ToFilePosition(), range.End.ToFilePosition());
+
+    internal static bool HasRange(this IFileRange range)
     {
-        public LspFileRange(ILspFilePosition start, ILspFilePosition end)
-        {
-            Start = start;
-            End = end;
-        }
-
-        public ILspFilePosition Start { get; }
-
-        public ILspFilePosition End { get; }
+        return range.Start.Line != 0
+            && range.Start.Column != 0
+            && range.End.Line != 0
+            && range.End.Column != 0;
     }
+    internal static ILspFilePosition ToLspPosition(this Position position) => new OmnisharpLspPosition(position);
 
-    internal class LspCurrentFileContext : ILspCurrentFileContext
-    {
-        private readonly ClientEditorContext _editorContext;
+    internal static ILspFileRange ToLspRange(this Range range) => new OmnisharpLspRange(range);
 
-        public LspCurrentFileContext(ClientEditorContext editorContext)
-        {
-            _editorContext = editorContext;
-            Uri = new Uri(editorContext.CurrentFilePath);
-        }
+    internal static Position ToOmnisharpPosition(this ILspFilePosition position) => new(position.Line, position.Character);
 
-        public string Language => _editorContext.CurrentFileLanguage;
+    internal static Range ToOmnisharpRange(this ILspFileRange range) => new(range.Start.ToOmnisharpPosition(), range.End.ToOmnisharpPosition());
 
-        public ILspFilePosition CursorPosition => new OmnisharpLspPosition(_editorContext.CursorPosition);
+    internal static BufferPosition ToBufferPosition(this IFilePosition position) => new(position.Line, position.Column);
 
-        public ILspFileRange SelectionRange => new OmnisharpLspRange(_editorContext.SelectionRange);
-
-        public Uri Uri { get; }
-
-        public string Content => _editorContext.CurrentFileContent;
-    }
-
-    /// <summary>
-    /// Extension methods to conveniently convert between file position and range types.
-    /// </summary>
-    public static class FileObjectExtensionMethods
-    {
-        /// <summary>
-        /// Convert a 1-based file position to a 0-based file position.
-        /// </summary>
-        /// <param name="position">The 1-based file position to convert.</param>
-        /// <returns>An equivalent 0-based file position.</returns>
-        public static ILspFilePosition ToLspPosition(this IFilePosition position) => new LspFilePosition(position.Line - 1, position.Column - 1);
-
-        /// <summary>
-        /// Convert a 1-based file range to a 0-based file range.
-        /// </summary>
-        /// <param name="range">The 1-based file range to convert.</param>
-        /// <returns>An equivalent 0-based file range.</returns>
-        public static ILspFileRange ToLspRange(this IFileRange range) => new LspFileRange(range.Start.ToLspPosition(), range.End.ToLspPosition());
-
-        /// <summary>
-        /// Convert a 0-based file position to a 1-based file position.
-        /// </summary>
-        /// <param name="position">The 0-based file position to convert.</param>
-        /// <returns>An equivalent 1-based file position.</returns>
-        public static IFilePosition ToFilePosition(this ILspFilePosition position) => new FilePosition(position.Line + 1, position.Character + 1);
-
-        /// <summary>
-        /// Convert a 0-based file range to a 1-based file range.
-        /// </summary>
-        /// <param name="range">The 0-based file range to convert.</param>
-        /// <returns>An equivalent 1-based file range.</returns>
-        public static IFileRange ToFileRange(this ILspFileRange range) => new FileRange(range.Start.ToFilePosition(), range.End.ToFilePosition());
-
-        internal static bool HasRange(this IFileRange range)
-        {
-            return range.Start.Line != 0
-                && range.Start.Column != 0
-                && range.End.Line != 0
-                && range.End.Column != 0;
-        }
-        internal static ILspFilePosition ToLspPosition(this Position position) => new OmnisharpLspPosition(position);
-
-        internal static ILspFileRange ToLspRange(this Range range) => new OmnisharpLspRange(range);
-
-        internal static Position ToOmnisharpPosition(this ILspFilePosition position) => new(position.Line, position.Character);
-
-        internal static Range ToOmnisharpRange(this ILspFileRange range) => new(range.Start.ToOmnisharpPosition(), range.End.ToOmnisharpPosition());
-
-        internal static BufferPosition ToBufferPosition(this IFilePosition position) => new(position.Line, position.Column);
-
-        internal static BufferRange ToBufferRange(this IFileRange range) => new(range.Start.ToBufferPosition(), range.End.ToBufferPosition());
-    }
+    internal static BufferRange ToBufferRange(this IFileRange range) => new(range.Start.ToBufferPosition(), range.End.ToBufferPosition());
 }
